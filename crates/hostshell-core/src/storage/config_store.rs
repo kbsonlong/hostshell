@@ -13,6 +13,16 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
+    pub fn load_keys(&self) -> Result<Vec<crate::storage::keys::KeyMetadata>> {
+        let path = self.base_dir.join("keys.json");
+        if !path.exists() { return Ok(vec![]); }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    pub fn save_keys(&self, keys: &[crate::storage::keys::KeyMetadata]) -> Result<()> {
+        fs::write(self.base_dir.join("keys.json"), serde_json::to_vec_pretty(keys)?)?;
+        Ok(())
+    }
     pub fn new() -> Result<Self> {
         let base_dir = Self::default_data_dir()?;
         fs::create_dir_all(&base_dir).map_err(HostShellError::Io)?;

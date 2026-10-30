@@ -152,6 +152,7 @@ fn cmd_list(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
             AuthMethod::Password(_) => "password",
             AuthMethod::PrivateKey { .. } => "privatekey",
             AuthMethod::Agent => "agent",
+            AuthMethod::KeyRef { .. } => "saved key",
         };
         println!(
             "  [{}] {} → {}@{}:{} | {} | auth:{}",
@@ -276,6 +277,9 @@ fn cmd_add(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::erro
         username: username.clone(),
         auth,
         proxy_mode,
+        forward_agent: false,
+        forward_agent_host_ids: vec![],
+        forward_agent_key_ids: vec![],
         jump_host_ids,
         cloudflare_config: None,
         proxy_command: stored_cmd,
@@ -357,6 +361,9 @@ async fn cmd_quick_connect(
         username: user.to_string(),
         auth: AuthMethod::Password(password.to_string()),
         proxy_mode: ProxyMode::Direct,
+        forward_agent: false,
+        forward_agent_host_ids: vec![],
+        forward_agent_key_ids: vec![],
         jump_host_ids: vec![],
         cloudflare_config: None,
         proxy_command: None,
@@ -382,7 +389,8 @@ async fn run_interactive_session(
     let (cols, rows) = terminal::terminal_size();
 
     let known_hosts = store.known_hosts_ref();
-    let session = SshSession::connect(host, jump_hosts, known_hosts, cols, rows, true).await?;
+    let stored_hosts = store.load_hosts().unwrap_or_default();
+    let session = SshSession::connect(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true).await?;
 
     let mut stage_rx = session.stage_rx;
     let mut output_rx = session.output_rx;

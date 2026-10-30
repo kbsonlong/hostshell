@@ -9,7 +9,8 @@ struct SwiftTermRepresentable: NSViewRepresentable {
     @ObservedObject var sessionVM: SessionViewModel
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
-        let tv = SwiftTerm.TerminalView(frame: .zero)
+        // SwiftTerm derives its initial rows and columns from the frame.
+        let tv = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 700, height: 460))
         tv.terminalDelegate = context.coordinator
         return tv
     }
@@ -43,8 +44,10 @@ struct SwiftTermRepresentable: NSViewRepresentable {
 
         /// Terminal layout changes (window resize, font change) → SSH window-change.
         func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            guard let cols = UInt32(exactly: newCols), let rows = UInt32(exactly: newRows),
+                  cols > 0, rows > 0 else { return }
             MainActor.assumeIsolated {
-                sessionVM.resize(cols: UInt32(newCols), rows: UInt32(newRows))
+                sessionVM.resize(cols: cols, rows: rows)
             }
         }
 

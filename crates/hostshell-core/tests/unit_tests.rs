@@ -113,6 +113,32 @@ fn test_import_proxyjump_missing_target_is_warning_and_not_dangling() {
 }
 
 #[test]
+fn test_import_matches_saved_jump_and_preserves_forward_agent() {
+    let jump = JumpHost {
+        id: "saved-jump".into(), name: "jump".into(), hostname: "jump.example".into(),
+        port: 32200, username: "zengshenglong".into(), auth: AuthMethod::Agent,
+    };
+    let config = "Host 10.98.32.131\n User zengshenglong\n Port 32200\n ForwardAgent yes\n ProxyJump zengshenglong@jump\n";
+    let result = hostshell_core::storage::importer::parse_ssh_config_with_existing(config, &[], &[jump.clone()]);
+    assert_eq!(result.hosts[0].jump_host_ids, vec!["saved-jump"]);
+    assert!(result.hosts[0].forward_agent);
+    assert!(result.jump_hosts.is_empty());
+    assert!(result.warnings.iter().any(|w| w.contains("select a saved certificate")));
+
+    let saved_host = parse_ssh_config("Host jump\n HostName jump.example\n User zengshenglong\n Port 32200\n").hosts.remove(0);
+    let from_hosts = hostshell_core::storage::importer::parse_ssh_config_with_existing(config, &[saved_host], &[]);
+    assert_eq!(from_hosts.jump_hosts[0].hostname, "jump.example");
+    assert_eq!(from_hosts.hosts[0].jump_host_ids, vec![from_hosts.jump_hosts[0].id.clone()]);
+
+    let override_result = hostshell_core::storage::importer::parse_ssh_config_with_existing(
+        "Host target\n ProxyJump other@jump\n", &[], &[jump],
+    );
+    assert_eq!(override_result.jump_hosts[0].username, "other");
+    assert_ne!(override_result.jump_hosts[0].name, "jump");
+    assert_eq!(override_result.hosts[0].jump_host_ids, vec![override_result.jump_hosts[0].id.clone()]);
+}
+
+#[test]
 fn test_known_hosts_store() {
     let mut store = KnownHostsStore::new();
     let entry = KnownHostEntry {
@@ -181,6 +207,9 @@ fn test_config_store_crud() {
         username: "tester".to_string(),
         auth: AuthMethod::Password("secret".to_string()),
         proxy_mode: ProxyMode::Direct,
+        forward_agent: false,
+        forward_agent_host_ids: vec![],
+        forward_agent_key_ids: vec![],
         jump_host_ids: vec![],
         cloudflare_config: None,
         proxy_command: None,
@@ -194,6 +223,15 @@ fn test_config_store_crud() {
     let loaded = store.load_hosts().unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].name, "Test Host");
+    let mut referenced = host.clone();
+    referenced.auth = AuthMethod::KeyRef { id: "key-1".into() };
+    referenced.forward_agent = true;
+    referenced.forward_agent_key_ids = vec!["key-1".into()];
+    let json = serde_json::to_string(&referenced).unwrap();
+    assert!(!json.contains("key_data"));
+    let decoded: Host = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.auth, referenced.auth);
+    assert_eq!(decoded.forward_agent_key_ids, vec!["key-1"]);
     let mut same_name = host.clone();
     same_name.id = "host-1-reimport".to_string();
     store.save_host(same_name).unwrap();

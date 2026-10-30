@@ -43,7 +43,7 @@ fn candidate_agent_sockets() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
     let mut out: Vec<PathBuf> = Vec::new();
-    let mut push_if_exists = |p: PathBuf, out: &mut Vec<PathBuf>| {
+    let push_if_exists = |p: PathBuf, out: &mut Vec<PathBuf>| {
         if !out.contains(&p) && p.exists() {
             out.push(p);
         }
@@ -139,7 +139,7 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
         match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
             Ok(Ok((agent, identities))) if !identities.is_empty() => {
                 tracing::info!(
-                    "Found ssh-agent socket {} ({} identities)",
+                    "SSH agent candidate usable: socket={} identities={}",
                     sock.display(),
                     identities.len()
                 );
@@ -200,11 +200,10 @@ async fn try_agent_identities<H: russh::client::Handler>(
     handle: &mut russh::client::Handle<H>,
     user: &str,
 ) -> std::result::Result<russh::client::AuthResult, String> {
-    let failure = russh::client::AuthResult::Failure {
+    let mut last = russh::client::AuthResult::Failure {
         remaining_methods: russh::MethodSet::empty(),
         partial_success: false,
     };
-    let mut last = failure;
     for identity in identities {
         let key = identity.public_key().into_owned();
         tracing::info!(
@@ -220,12 +219,30 @@ async fn try_agent_identities<H: russh::client::Handler>(
         } else {
             None
         };
-        last = handle
-            .authenticate_publickey_with(user, key, hash_alg, agent)
+
+        match handle
+            .authenticate_publickey_with(user, key.clone(), hash_alg, agent)
             .await
-            .map_err(|e| format!("ssh-agent 签名请求失败: {e}"))?;
-        if matches!(last, russh::client::AuthResult::Success) {
-            break;
+        {
+            Ok(russh::client::AuthResult::Success) => {
+                tracing::info!("SSH agent accepted identity {} ({})", key.algorithm(), identity.comment());
+                return Ok(russh::client::AuthResult::Success);
+            }
+            Ok(rejection @ russh::client::AuthResult::Failure { .. }) => {
+                tracing::warn!(
+                    "SSH server rejected agent identity: algorithm={} comment={} result={rejection:?}",
+                    key.algorithm(),
+                    identity.comment()
+                );
+                last = rejection;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "SSH agent signing failed for identity algorithm={} comment={}: {error}",
+                    key.algorithm(),
+                    identity.comment()
+                );
+            }
         }
     }
     Ok(last)
@@ -348,13 +365,18 @@ pub struct SshSession;
 
 impl SshSession {
     pub async fn connect(
-        host: Host,
-        jump_hosts: Vec<JumpHost>,
+        mut host: Host,
+        mut jump_hosts: Vec<JumpHost>,
+        stored_hosts: Vec<Host>,
         known_hosts: Arc<Mutex<KnownHostsStore>>,
         cols: u32,
         rows: u32,
         auto_accept_new_keys: bool,
     ) -> Result<SessionHandle> {
+        host.auth = crate::storage::keys::resolve_auth(&host.auth).map_err(HostShellError::Config)?;
+        for jump in &mut jump_hosts {
+            jump.auth = crate::storage::keys::resolve_auth(&jump.auth).map_err(HostShellError::Config)?;
+        }
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
         let (output_tx, output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (stage_tx, stage_rx) = mpsc::unbounded_channel::<StageEvent>();
@@ -465,12 +487,36 @@ impl SshSession {
             ..Default::default()
         });
 
+        let agent = if host.forward_agent {
+            if host.forward_agent_host_ids.is_empty() && host.forward_agent_key_ids.is_empty() {
+                return Err(HostShellError::Config("SSH Agent 转发已启用，请选择至少一个私钥".into()));
+            }
+            let mut keys = Vec::new();
+            for id in &host.forward_agent_key_ids {
+                let auth = crate::storage::keys::resolve_auth(&AuthMethod::KeyRef { id: id.clone() }).map_err(HostShellError::Config)?;
+                if let AuthMethod::PrivateKey { key_data, passphrase } = auth {
+                    keys.push(load_private_key(&key_data, passphrase.as_deref(), &host.username)?);
+                }
+            }
+            for id in &host.forward_agent_host_ids {
+                let source = if id == &host.id { Some(&host) } else { stored_hosts.iter().find(|h| &h.id == id) }
+                    .ok_or_else(|| HostShellError::Config("选中的转发密钥已不存在".into()))?;
+                match crate::storage::keys::resolve_auth(&source.auth).map_err(HostShellError::Config)? {
+                    AuthMethod::PrivateKey { key_data, passphrase } => keys.push(load_private_key(&key_data, passphrase.as_deref(), &source.username)?),
+                    _ => return Err(HostShellError::Config(format!("主机 {} 没有私钥可供转发", source.name))),
+                }
+            }
+            Some(super::agent::AppAgent::new(&keys).await.map_err(HostShellError::Session)?)
+        } else {
+            None
+        };
         let handler = TargetClientHandler {
             hostname: host.hostname.clone(),
             port: host.port,
             known_hosts,
             stage_tx: Some(stage_tx.clone()),
             auto_accept_new_keys,
+            agent,
         };
 
         let mut handle = timeout(
@@ -502,6 +548,7 @@ impl SshSession {
             AuthMethod::Password(_) => "password",
             AuthMethod::PrivateKey { .. } => "publickey",
             AuthMethod::Agent => "agent",
+            AuthMethod::KeyRef { .. } => unreachable!(),
         };
 
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::AuthenticatingUser {
@@ -562,6 +609,7 @@ impl SshSession {
                     }
                 }
             }
+            AuthMethod::KeyRef { .. } => unreachable!(),
         };
 
         // Fallback: server only offers keyboard-interactive (PAM/MFA bastions).
@@ -626,6 +674,15 @@ impl SshSession {
             .channel_open_session()
             .await
             .map_err(|e| HostShellError::Session(format!("Failed to open session channel: {}", e)))?;
+
+        if host.forward_agent {
+            channel.agent_forward(true).await.map_err(|e| HostShellError::Session(format!("SSH Agent 转发请求失败: {e}")))?;
+            match timeout(connect_timeout, channel.wait()).await {
+                Ok(Some(russh::ChannelMsg::Success)) => tracing::info!("SSH agent forwarding enabled"),
+                Ok(Some(russh::ChannelMsg::Failure)) => return Err(HostShellError::Session("远端拒绝 SSH Agent 转发".to_string())),
+                other => return Err(HostShellError::Session(format!("SSH Agent 转发未获得确认: {other:?}"))),
+            }
+        }
 
         channel
             .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])

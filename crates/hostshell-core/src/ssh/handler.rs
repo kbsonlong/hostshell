@@ -10,10 +10,33 @@ pub struct TargetClientHandler {
     pub known_hosts: Arc<Mutex<KnownHostsStore>>,
     pub stage_tx: Option<tokio::sync::mpsc::UnboundedSender<StageEvent>>,
     pub auto_accept_new_keys: bool,
+    pub(crate) agent: Option<super::agent::AppAgent>,
 }
 
 impl russh::client::Handler for TargetClientHandler {
     type Error = russh::Error;
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        let Some(agent) = &self.agent else { return Ok(()); };
+        match agent.open() {
+            Ok(mut agent) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    if let Err(error) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
+                        tracing::warn!("SSH agent forwarding channel closed: {error}");
+                    }
+                });
+            }
+            Err(error) => tracing::warn!("Cannot connect to forwarded SSH agent: {error}"),
+        }
+        Ok(())
+    }
 
     async fn check_server_key(
         &mut self,

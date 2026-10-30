@@ -8,6 +8,7 @@ pub enum AuthMethod {
         key_data: String,
         passphrase: Option<String>,
     },
+    KeyRef { id: String },
     Agent,
 }
 
@@ -55,6 +56,12 @@ pub struct Host {
     pub username: String,
     pub auth: AuthMethod,
     pub proxy_mode: ProxyMode,
+    #[serde(default)]
+    pub forward_agent: bool,
+    #[serde(default)]
+    pub forward_agent_host_ids: Vec<String>,
+    #[serde(default)]
+    pub forward_agent_key_ids: Vec<String>,
     pub jump_host_ids: Vec<String>,
     pub cloudflare_config: Option<CloudflareConfig>,
     /// Raw ProxyCommand template string (e.g. `/opt/homebrew/bin/cloudflared access ssh --hostname %h`)

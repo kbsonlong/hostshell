@@ -7,19 +7,51 @@ use crate::model::host::{Host, JumpHost};
 use crate::model::stage::StageEvent;
 use crate::ssh::session::{SessionCommand, SshSession};
 use crate::storage::config_store::ConfigStore;
-use crate::storage::importer::parse_ssh_config;
+use crate::storage::importer::parse_ssh_config_with_existing;
 
 pub struct EngineWrapper {
     pub runtime: Runtime,
     pub store: ConfigStore,
+    #[cfg(target_os = "macos")]
+    _log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
 pub struct SessionWrapper {
     pub cmd_tx: UnboundedSender<SessionCommand>,
 }
 
+#[cfg(target_os = "macos")]
+fn desktop_log_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| home.join("Library/Logs/HostShell"))
+}
+
+#[cfg(target_os = "macos")]
+fn init_desktop_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::prelude::*;
+
+    let log_dir = desktop_log_dir()?;
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return None;
+    }
+    let appender = tracing_appender::rolling::never(log_dir, "hostshell.log");
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(writer));
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    tracing::info!("HostShell desktop diagnostic logging initialized; credentials and terminal output are excluded");
+    Some(guard)
+}
+
 #[no_mangle]
 pub extern "C" fn hostshell_engine_init() -> *mut EngineWrapper {
+    #[cfg(target_os = "macos")]
+    let log_guard = init_desktop_logging();
+
     let rt = match Runtime::new() {
         Ok(r) => r,
         Err(_) => return std::ptr::null_mut(),
@@ -33,7 +65,24 @@ pub extern "C" fn hostshell_engine_init() -> *mut EngineWrapper {
     Box::into_raw(Box::new(EngineWrapper {
         runtime: rt,
         store,
+        #[cfg(target_os = "macos")]
+        _log_guard: log_guard,
     }))
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_log_directory() -> *mut c_char {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = desktop_log_dir() {
+            if std::fs::create_dir_all(&path).is_ok() {
+                if let Ok(c_path) = CString::new(path.to_string_lossy().as_bytes()) {
+                    return c_path.into_raw();
+                }
+            }
+        }
+    }
+    std::ptr::null_mut()
 }
 
 #[no_mangle]
@@ -52,6 +101,55 @@ pub extern "C" fn hostshell_free_string(ptr: *mut c_char) {
             drop(CString::from_raw(ptr));
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_list_keys(engine: *mut EngineWrapper) -> *mut c_char {
+    if engine.is_null() { return std::ptr::null_mut(); }
+    let store = unsafe { &(*engine).store };
+    match store.load_keys().and_then(|keys| Ok(serde_json::to_string(&keys)?)) {
+        Ok(json) => CString::new(json).unwrap_or_default().into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_add_key(engine: *mut EngineWrapper, json: *const c_char) -> *mut c_char {
+    let result = (|| -> std::result::Result<(), String> {
+        if engine.is_null() || json.is_null() { return Err("无效请求".into()); }
+        let store = unsafe { &(*engine).store };
+        let value: serde_json::Value = serde_json::from_str(unsafe { CStr::from_ptr(json) }.to_str().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let name = value["name"].as_str().unwrap_or("").trim();
+        let key_data = value["key_data"].as_str().unwrap_or("");
+        if name.is_empty() || key_data.is_empty() { return Err("请输入名称和私钥".into()); }
+        let mut keys = store.load_keys().map_err(|e| e.to_string())?;
+        let key = crate::storage::keys::make_key(name.to_string(), key_data.to_string(), value["passphrase"].as_str().filter(|p| !p.is_empty()).map(str::to_owned))?;
+        keys.push(key.clone());
+        if let Err(error) = store.save_keys(&keys) {
+            let _ = crate::storage::keys::delete_key(&key.id);
+            return Err(error.to_string());
+        }
+        Ok(())
+    })();
+    let response = match result { Ok(()) => serde_json::json!({"ok":true}), Err(e) => serde_json::json!({"ok":false,"error":e}) };
+    CString::new(response.to_string()).unwrap_or_default().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_delete_key(engine: *mut EngineWrapper, id: *const c_char) -> c_int {
+    if engine.is_null() || id.is_null() { return -1; }
+    let store = unsafe { &(*engine).store };
+    let Ok(id) = unsafe { CStr::from_ptr(id) }.to_str() else { return -1; };
+    let Ok(hosts) = store.load_hosts() else { return -1; };
+    let Ok(jumps) = store.load_jump_hosts() else { return -1; };
+    let referenced = |auth: &crate::model::host::AuthMethod| matches!(auth, crate::model::host::AuthMethod::KeyRef { id: key_id } if key_id == id);
+    if hosts.iter().any(|h| referenced(&h.auth) || h.forward_agent_key_ids.iter().any(|key_id| key_id == id)) || jumps.iter().any(|j| referenced(&j.auth)) { return -2; }
+    let Ok(mut keys) = store.load_keys() else { return -1; };
+    if !keys.iter().any(|key| key.id == id) { return -1; }
+    if crate::storage::keys::delete_key(id).is_err() { return -1; }
+    keys.retain(|key| key.id != id);
+    if store.save_keys(&keys).is_err() { return -1; }
+    0
 }
 
 // --- Hosts CRUD ---
@@ -160,7 +258,7 @@ pub extern "C" fn hostshell_delete_jump_host(engine: *mut EngineWrapper, jh_id: 
 
 // --- Import SSH Config ---
 #[no_mangle]
-pub extern "C" fn hostshell_import_ssh_config(_engine: *mut EngineWrapper, config_text: *const c_char) -> *mut c_char {
+pub extern "C" fn hostshell_import_ssh_config(engine: *mut EngineWrapper, config_text: *const c_char) -> *mut c_char {
     if config_text.is_null() {
         return std::ptr::null_mut();
     }
@@ -169,7 +267,11 @@ pub extern "C" fn hostshell_import_ssh_config(_engine: *mut EngineWrapper, confi
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
-    let res = parse_ssh_config(str_slice);
+    let (hosts, jumps) = if engine.is_null() { (vec![], vec![]) } else {
+        let store = unsafe { &(*engine).store };
+        (store.load_hosts().unwrap_or_default(), store.load_jump_hosts().unwrap_or_default())
+    };
+    let res = parse_ssh_config_with_existing(str_slice, &hosts, &jumps);
     let json = serde_json::json!({
         "hosts": res.hosts,
         "jump_hosts": res.jump_hosts,
@@ -204,8 +306,20 @@ pub extern "C" fn hostshell_connect(
     };
     let host: Host = match serde_json::from_str(str_slice) {
         Ok(h) => h,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            tracing::error!("Rejected malformed host configuration JSON: {e}");
+            return std::ptr::null_mut();
+        }
     };
+    tracing::info!(
+        "Starting SSH session: host={} endpoint={}:{} user={} proxy={:?} auth={}",
+        host.name,
+        host.hostname,
+        host.port,
+        host.username,
+        host.proxy_mode,
+        match host.auth { crate::model::host::AuthMethod::Agent => "agent", crate::model::host::AuthMethod::Password(_) => "password", crate::model::host::AuthMethod::PrivateKey { .. } | crate::model::host::AuthMethod::KeyRef { .. } => "private_key" }
+    );
 
     let all_jump_hosts = eng.store.load_jump_hosts().unwrap_or_default();
     let selected_jump_hosts: Vec<JumpHost> = host
@@ -215,12 +329,14 @@ pub extern "C" fn hostshell_connect(
         .collect();
 
     let known_hosts = eng.store.known_hosts_ref();
+    let stored_hosts = eng.store.load_hosts().unwrap_or_default();
     let user_data_addr = user_data as usize;
 
     let result = eng.runtime.block_on(async {
         SshSession::connect(
             host,
             selected_jump_hosts,
+            stored_hosts,
             known_hosts,
             cols,
             rows,
@@ -239,6 +355,7 @@ pub extern "C" fn hostshell_connect(
                         stage_evt = handle.stage_rx.recv() => {
                             match stage_evt {
                                 Some(evt) => {
+                                    tracing::info!("SSH session stage: {:?}", evt.stage);
                                     if let Some(cb) = stage_cb {
                                         if let Ok(json_str) = serde_json::to_string(&evt) {
                                             if let Ok(c_json) = CString::new(json_str) {

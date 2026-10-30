@@ -13,8 +13,12 @@ public struct HostEditSheet: View {
     @State private var passwordText: String
     @State private var privateKeyText: String
     @State private var passphraseText: String
+    @State private var selectedKeyId: String
+    @State private var forwardKeyId: String
 
     @State private var proxyMode: ProxyMode
+    @State private var forwardAgent: Bool
+    @State private var forwardAgentHostIds: [String]
     @State private var selectedJumpHostIds: [String]
 
     @State private var cfAuthType: CloudflareAuthType
@@ -41,6 +45,7 @@ public struct HostEditSheet: View {
         var pwd = ""
         var pk = ""
         var pass = ""
+        var keyId = ""
         if let auth = host?.auth {
             switch auth {
             case .password(let p):
@@ -52,14 +57,21 @@ public struct HostEditSheet: View {
                 pass = passphrase ?? ""
             case .agent:
                 authC = 2
+            case .keyRef(let id):
+                authC = 3
+                keyId = id
             }
         }
         _authChoice = State(initialValue: authC)
         _passwordText = State(initialValue: pwd)
         _privateKeyText = State(initialValue: pk)
         _passphraseText = State(initialValue: pass)
+        _selectedKeyId = State(initialValue: keyId)
+        _forwardKeyId = State(initialValue: host?.forward_agent_key_ids?.first ?? "")
 
         _proxyMode = State(initialValue: host?.proxy_mode ?? .direct)
+        _forwardAgent = State(initialValue: host?.forward_agent ?? false)
+        _forwardAgentHostIds = State(initialValue: host?.forward_agent_host_ids ?? [])
         _selectedJumpHostIds = State(initialValue: host?.jump_host_ids ?? [])
 
         let cf = host?.cloudflare_config
@@ -116,12 +128,18 @@ public struct HostEditSheet: View {
                                 Text("密码认证").tag(0)
                                 Text("SSH 私钥").tag(1)
                                 Text("SSH Agent").tag(2)
+                                Text("已保存证书").tag(3)
                             }
                             .pickerStyle(.segmented)
 
                             if authChoice == 0 {
                                 SecureField("登录密码", text: $passwordText)
                                     .textFieldStyle(.roundedBorder)
+                            } else if authChoice == 3 {
+                                Picker("证书", selection: $selectedKeyId) {
+                                    Text("选择证书").tag("")
+                                    ForEach(appVM.keys) { Text($0.name).tag($0.id) }
+                                }
                             } else if authChoice == 1 {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("OpenSSH 私钥内容 (Ed25519 / RSA):")
@@ -148,6 +166,26 @@ public struct HostEditSheet: View {
                             }
                         }
                         .padding(6)
+                    }
+
+                    Toggle("转发应用内 SSH Agent（仅用于可信主机）", isOn: $forwardAgent)
+                    if forwardAgent {
+                        Picker("转发证书", selection: $forwardKeyId) {
+                            Text("请选择证书").tag("")
+                            ForEach(appVM.keys) { Text($0.name).tag($0.id) }
+                        }
+                        Text("选择允许远端用于签名的主机私钥。")
+                            .font(.caption).foregroundColor(.secondary)
+                        if let host = originalHost, authChoice == 1 {
+                            Toggle("当前主机的私钥", isOn: forwardKeyBinding(host.id))
+                        }
+                        ForEach(appVM.hosts.filter { item in
+                            guard item.id != originalHost?.id else { return false }
+                            if case .privateKey = item.auth { return true }
+                            return false
+                        }) { item in
+                            Toggle(item.name, isOn: forwardKeyBinding(item.id))
+                        }
                     }
 
                     // Proxy Mode
@@ -260,6 +298,16 @@ public struct HostEditSheet: View {
         .frame(width: 540, height: 620)
     }
 
+    private func forwardKeyBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { forwardAgentHostIds.contains(id) }, set: { selected in
+            if selected {
+                if !forwardAgentHostIds.contains(id) { forwardAgentHostIds.append(id) }
+            } else {
+                forwardAgentHostIds.removeAll { $0 == id }
+            }
+        })
+    }
+
     private func openPrivateKeyFile() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -291,6 +339,18 @@ public struct HostEditSheet: View {
             errorMessage = "请输入用户名"
             return
         }
+        if authChoice == 3 && !appVM.keys.contains(where: { $0.id == selectedKeyId }) {
+            errorMessage = "请选择有效证书"
+            return
+        }
+        if forwardAgent && forwardAgentHostIds.isEmpty && forwardKeyId.isEmpty {
+            errorMessage = "请选择至少一个用于转发的私钥"
+            return
+        }
+        if authChoice != 1, let id = originalHost?.id, forwardAgentHostIds.contains(id), forwardAgent {
+            errorMessage = "当前主机未使用私钥，请重新选择转发密钥"
+            return
+        }
 
         if proxyMode == .proxyJump && selectedJumpHostIds.isEmpty {
             errorMessage = "ProxyJump 跳板机模式必须至少勾选一个跳板机"
@@ -319,6 +379,8 @@ public struct HostEditSheet: View {
                 keyData: privateKeyText,
                 passphrase: passphraseText.isEmpty ? nil : passphraseText
             )
+        case 3:
+            auth = .keyRef(id: selectedKeyId)
         default:
             auth = .agent
         }
@@ -349,6 +411,9 @@ public struct HostEditSheet: View {
             username: username,
             auth: auth,
             proxy_mode: proxyMode,
+            forward_agent: forwardAgent,
+            forward_agent_host_ids: forwardAgent ? forwardAgentHostIds : [],
+            forward_agent_key_ids: forwardAgent && !forwardKeyId.isEmpty ? [forwardKeyId] : [],
             jump_host_ids: proxyMode == .proxyJump ? selectedJumpHostIds : [],
             cloudflare_config: cfConfig,
             tags: tags,

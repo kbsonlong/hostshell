@@ -64,14 +64,13 @@ pub async fn connect_proxy_command(
     port: u16,
 ) -> Result<BoxedStream> {
     let expanded = expand_proxy_command(cmd_template, hostname, port);
-    tracing::debug!("Spawning ProxyCommand: {}", expanded);
-
     // Split into program + args using shell-style tokenisation (simple split on whitespace;
     // sufficient for the cloudflared invocation pattern).
     let mut parts = expanded.split_whitespace();
     let program = parts
         .next()
         .ok_or_else(|| HostShellError::Proxy("ProxyCommand is empty".to_string()))?;
+    tracing::debug!("Spawning ProxyCommand program: {}", program);
     let args: Vec<&str> = parts.collect();
 
     let mut child = Command::new(program)
@@ -100,6 +99,6 @@ pub async fn connect_proxy_command(
         _child: child,
     };
 
-    tracing::info!("ProxyCommand '{}' spawned successfully", expanded);
+    tracing::info!("ProxyCommand program spawned successfully: {}", program);
     Ok(Box::pin(stream) as BoxedStream)
 }

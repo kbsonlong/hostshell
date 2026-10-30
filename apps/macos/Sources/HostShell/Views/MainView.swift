@@ -3,7 +3,6 @@ import SwiftUI
 public struct MainView: View {
     @StateObject private var appVM = AppViewModel()
     @State private var activeSessionVM: SessionViewModel? = nil
-    @State private var activeJumpSessionVM: SessionViewModel? = nil
 
     public var body: some View {
         NavigationSplitView {
@@ -21,6 +20,8 @@ public struct MainView: View {
                 HostListView(appVM: appVM)
             case .jumpHosts:
                 JumpHostListView(appVM: appVM)
+            case .keys:
+                KeyManagementView(appVM: appVM)
             case .settings:
                 SettingsView(appVM: appVM)
             }
@@ -36,40 +37,29 @@ public struct MainView: View {
                 activeSessionVM = nil
             }
         }
-        .sheet(isPresented: Binding(
-            get: { appVM.activeJumpSessionVM != nil },
-            set: { if !$0 { appVM.activeJumpSessionVM = nil } }
-        )) {
-            if let vm = appVM.activeJumpSessionVM {
-                Group {
-                    if vm.isConnected {
-                        TerminalView(sessionVM: vm) {
-                            appVM.activeJumpSessionVM = nil
-                        }
-                        .frame(minWidth: 700, minHeight: 460)
-                    } else {
-                        ConnectionStageView(sessionVM: vm) {
-                            appVM.activeJumpSessionVM = nil
-                        }
-                    }
-                }
-            }
-        }
         .sheet(item: $appVM.activeSessionHost) { host in
             if let vm = activeSessionVM {
-                Group {
-                    if vm.isConnected {
-                        TerminalView(sessionVM: vm) {
-                            appVM.activeSessionHost = nil
-                        }
-                        .frame(minWidth: 700, minHeight: 460)
-                    } else {
-                        ConnectionStageView(sessionVM: vm) {
-                            appVM.activeSessionHost = nil
-                        }
-                    }
+                SessionSheetContent(sessionVM: vm) {
+                    appVM.activeSessionHost = nil
                 }
             }
         }
+    }
+}
+
+private struct SessionSheetContent: View {
+    @ObservedObject var sessionVM: SessionViewModel
+    let onClose: () -> Void
+
+    var body: some View {
+        Group {
+            if sessionVM.isConnected {
+                TerminalView(sessionVM: sessionVM, onClose: onClose)
+                    .frame(minWidth: 700, minHeight: 460)
+            } else {
+                ConnectionStageView(sessionVM: sessionVM, onCancel: onClose)
+            }
+        }
+        .animation(.default, value: sessionVM.isConnected)
     }
 }

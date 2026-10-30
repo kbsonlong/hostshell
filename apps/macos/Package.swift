@@ -18,14 +18,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftTerm", package: "SwiftTerm")
             ],
-            path: "Sources/HostShell",
-            linkerSettings: [
-                .unsafeFlags([
-                    "-L/Users/kbsonlong/code/hostshell/target/debug",
-                    "-lhostshell_core",
-                    "-Xlinker", "-rpath", "-Xlinker", "/Users/kbsonlong/code/hostshell/target/debug"
-                ])
-            ]
+            path: "Sources/HostShell"
         )
     ]
 )

@@ -4,6 +4,7 @@ import Combine
 public enum NavigationCategory: String, CaseIterable, Identifiable {
     case hosts = "主机列表"
     case jumpHosts = "跳板机资产库"
+    case keys = "证书管理"
     case settings = "设置与诊断"
 
     public var id: String { rawValue }
@@ -12,6 +13,7 @@ public enum NavigationCategory: String, CaseIterable, Identifiable {
         switch self {
         case .hosts: return "server.rack"
         case .jumpHosts: return "arrow.triangle.branch"
+        case .keys: return "key.fill"
         case .settings: return "gearshape"
         }
     }
@@ -22,6 +24,7 @@ public final class AppViewModel: ObservableObject {
     @Published public var selectedCategory: NavigationCategory = .hosts
     @Published public var hosts: [Host] = []
     @Published public var jumpHosts: [JumpHost] = []
+    @Published public var keys: [SSHKeyMetadata] = []
     @Published public var searchQuery: String = ""
 
     // Sheet states
@@ -45,6 +48,19 @@ public final class AppViewModel: ObservableObject {
     public func loadData() {
         self.hosts = bridge.listHosts()
         self.jumpHosts = bridge.listJumpHosts()
+        self.keys = bridge.listKeys()
+    }
+
+    public func addKey(name: String, key: String, passphrase: String) -> String? {
+        let error = bridge.addKey(name: name, key: key, passphrase: passphrase)
+        if error == nil { loadData() }
+        return error
+    }
+
+    public func deleteKey(_ key: SSHKeyMetadata) -> String? {
+        let result = bridge.deleteKey(key.id)
+        if result == 0 { loadData(); return nil }
+        return result == -2 ? "该证书仍被主机或 Agent 转发使用，请先解除引用。" : "删除失败，请检查 Keychain。"
     }
 
     public var filteredHosts: [Host] {
@@ -120,12 +136,8 @@ public final class AppViewModel: ObservableObject {
             created_at: now,
             updated_at: now
         )
-        let session = SessionViewModel(host: host)
-        activeJumpSessionVM = session
-        session.connect()
+        activeSessionHost = host
     }
-
-    @Published public var activeJumpSessionVM: SessionViewModel? = nil
 
     public func connect(to host: Host) {
         activeSessionHost = host

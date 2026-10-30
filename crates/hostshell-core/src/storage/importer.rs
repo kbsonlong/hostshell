@@ -17,6 +17,10 @@ pub struct ImportResult {
 }
 
 pub fn parse_ssh_config(content: &str) -> ImportResult {
+    parse_ssh_config_with_existing(content, &[], &[])
+}
+
+pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], existing_jumps: &[JumpHost]) -> ImportResult {
     let mut hosts = Vec::new();
     let mut warnings = Vec::new();
 
@@ -27,6 +31,7 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
     let mut identity_file: Option<String> = None;
     let mut proxy_jump: Option<String> = None;
     let mut proxy_command: Option<String> = None;
+    let mut forward_agent = false;
 
     let flush_host = |hosts: &mut Vec<Host>,
                       warnings: &mut Vec<String>,
@@ -36,7 +41,8 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                       user: &str,
                       id_file: Option<&str>,
                       p_jump: Option<&str>,
-                      p_cmd: Option<&str>| {
+                      p_cmd: Option<&str>,
+                      forward: bool| {
         for name in names {
             if name == "*" || name.contains('?') || name.is_empty() {
                 continue;
@@ -98,6 +104,10 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                 .unwrap_or_default()
                 .as_secs();
 
+            if forward {
+                warnings.push(format!("Host '{}': ForwardAgent is enabled; select a saved certificate in the host settings before connecting.", name));
+            }
+
             hosts.push(Host {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: name.clone(),
@@ -106,6 +116,9 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                 username: effective_user,
                 auth,
                 proxy_mode,
+                forward_agent: forward,
+                forward_agent_host_ids: vec![],
+                forward_agent_key_ids: vec![],
                 jump_host_ids,
                 cloudflare_config: cf_config,
                 proxy_command: stored_proxy_command,
@@ -139,6 +152,7 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                             identity_file.as_deref(),
                             proxy_jump.as_deref(),
                             proxy_command.as_deref(),
+                            forward_agent,
                         );
                     }
                     current_names = parts.map(|s| s.to_string()).collect();
@@ -148,6 +162,7 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                     identity_file = None;
                     proxy_jump = None;
                     proxy_command = None;
+                    forward_agent = false;
                 }
                 "hostname" => {
                     if let Some(val) = parts.next() {
@@ -179,6 +194,9 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                     let rest = trimmed[key.len()..].trim();
                     proxy_command = Some(rest.to_string());
                 }
+                "forwardagent" => {
+                    forward_agent = parts.next().is_some_and(|value| value.eq_ignore_ascii_case("yes"));
+                }
                 _ => {}
             }
         }
@@ -195,6 +213,7 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
             identity_file.as_deref(),
             proxy_jump.as_deref(),
             proxy_command.as_deref(),
+            forward_agent,
         );
     }
 
@@ -210,20 +229,37 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
         let Some(raw_ref) = hosts[idx].jump_host_ids.first().cloned() else {
             continue;
         };
-        let ref_name = raw_ref.rsplit('@').next().unwrap_or(&raw_ref).to_string();
+        let (override_user, ref_name) = match raw_ref.rsplit_once('@') {
+            Some((user, name)) if !user.is_empty() => (Some(user), name),
+            _ => (None, raw_ref.as_str()),
+        };
+        let ref_name = ref_name.to_string();
         let target = hosts
             .iter()
-            .find(|h| h.name == ref_name && h.proxy_mode != ProxyMode::ProxyJump)
-            .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone()));
+            .find(|h| h.name.eq_ignore_ascii_case(&ref_name) && h.proxy_mode == ProxyMode::Direct)
+            .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone(), None))
+            .or_else(|| existing_jumps.iter().find(|j| j.name.eq_ignore_ascii_case(&ref_name))
+                .map(|j| (j.hostname.clone(), j.port, j.username.clone(), j.auth.clone(), Some(j.id.clone()))))
+            .or_else(|| existing_hosts.iter().find(|h| h.name.eq_ignore_ascii_case(&ref_name) && h.proxy_mode == ProxyMode::Direct)
+                .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone(), None)));
         match target {
-            Some((hostname, port, username, auth)) => {
-                let id = match jump_hosts.iter().find(|j| j.name == ref_name) {
+            Some((hostname, port, configured_user, auth, existing_id)) => {
+                let username = override_user.unwrap_or(&configured_user).to_string();
+                let equivalent = existing_jumps.iter().find(|j| j.name.eq_ignore_ascii_case(&ref_name) && j.hostname == hostname && j.port == port && j.username == username && j.auth == auth);
+                if let Some(id) = existing_id.filter(|_| username == configured_user).or_else(|| equivalent.map(|j| j.id.clone())) {
+                    hosts[idx].jump_host_ids = vec![id];
+                    continue;
+                }
+                let id = match jump_hosts.iter().find(|j| j.username == username && j.hostname == hostname && j.port == port && j.auth == auth) {
                     Some(j) => j.id.clone(),
                     None => {
                         let id = uuid::Uuid::new_v4().to_string();
+                        let name = if existing_jumps.iter().chain(jump_hosts.iter()).any(|j| j.name.eq_ignore_ascii_case(&ref_name)) {
+                            format!("{}@{} ({})", username, ref_name, &id[..8])
+                        } else { ref_name.clone() };
                         jump_hosts.push(JumpHost {
                             id: id.clone(),
-                            name: ref_name.clone(),
+                            name,
                             hostname,
                             port,
                             username,
@@ -236,7 +272,7 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
             }
             None => {
                 warnings.push(format!(
-                    "Host '{}': ProxyJump '{}' has no matching Host block in the imported config; left unlinked.",
+                    "Host '{}': ProxyJump '{}' has no matching Host block or saved jump host; left unlinked.",
                     hosts[idx].name, raw_ref
                 ));
                 hosts[idx].jump_host_ids = Vec::new();

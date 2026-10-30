@@ -13,6 +13,7 @@ public struct JumpHostEditSheet: View {
     @State private var passwordText: String
     @State private var privateKeyText: String
     @State private var passphraseText: String
+    @State private var selectedKeyId: String
 
     @State private var errorMessage: String? = nil
 
@@ -31,6 +32,7 @@ public struct JumpHostEditSheet: View {
         var pwd = ""
         var pk = ""
         var pass = ""
+        var keyId = ""
         if let auth = jumpHost?.auth {
             switch auth {
             case .password(let p):
@@ -42,12 +44,15 @@ public struct JumpHostEditSheet: View {
                 pass = passphrase ?? ""
             case .agent:
                 authC = 2
+            case .keyRef(let id):
+                authC = 3; keyId = id
             }
         }
         _authChoice = State(initialValue: authC)
         _passwordText = State(initialValue: pwd)
         _privateKeyText = State(initialValue: pk)
         _passphraseText = State(initialValue: pass)
+        _selectedKeyId = State(initialValue: keyId)
     }
 
     public var body: some View {
@@ -90,12 +95,18 @@ public struct JumpHostEditSheet: View {
                             Text("密码认证").tag(0)
                             Text("SSH 私钥").tag(1)
                             Text("SSH Agent").tag(2)
+                            Text("已保存证书").tag(3)
                         }
                         .pickerStyle(.segmented)
 
                         if authChoice == 0 {
                             SecureField("跳板机登录密码", text: $passwordText)
                                 .textFieldStyle(.roundedBorder)
+                        } else if authChoice == 3 {
+                            Picker("证书", selection: $selectedKeyId) {
+                                Text("选择证书").tag("")
+                                ForEach(appVM.keys) { Text($0.name).tag($0.id) }
+                            }
                         } else if authChoice == 1 {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("OpenSSH 私钥内容:")
@@ -158,6 +169,10 @@ public struct JumpHostEditSheet: View {
             return
         }
 
+        if authChoice == 3 && !appVM.keys.contains(where: { $0.id == selectedKeyId }) {
+            errorMessage = "请选择有效证书"
+            return
+        }
         let auth: AuthMethod
         switch authChoice {
         case 0:
@@ -167,6 +182,8 @@ public struct JumpHostEditSheet: View {
                 keyData: privateKeyText,
                 passphrase: passphraseText.isEmpty ? nil : passphraseText
             )
+        case 3:
+            auth = .keyRef(id: selectedKeyId)
         default:
             auth = .agent
         }

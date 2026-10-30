@@ -1,4 +1,12 @@
 import Foundation
+import AppKit
+
+@_silgen_name("hostshell_list_keys")
+func c_hostshell_list_keys(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_add_key")
+func c_hostshell_add_key(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_delete_key")
+func c_hostshell_delete_key(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
 
 // C-ABI declarations matching crates/hostshell-core/src/ffi/mod.rs
 @_silgen_name("hostshell_engine_init")
@@ -9,6 +17,9 @@ func c_hostshell_engine_free(_ engine: OpaquePointer?)
 
 @_silgen_name("hostshell_free_string")
 func c_hostshell_free_string(_ ptr: UnsafeMutablePointer<CChar>?)
+
+@_silgen_name("hostshell_log_directory")
+func c_hostshell_log_directory() -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("hostshell_list_hosts")
 func c_hostshell_list_hosts(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
@@ -115,6 +126,23 @@ public final class HostShellBridge: @unchecked Sendable {
         }
     }
 
+    public func listKeys() -> [SSHKeyMetadata] {
+        guard let ptr = c_hostshell_list_keys(enginePtr) else { return [] }
+        defer { c_hostshell_free_string(ptr) }
+        return (try? JSONDecoder().decode([SSHKeyMetadata].self, from: Data(String(cString: ptr).utf8))) ?? []
+    }
+
+    public func addKey(name: String, key: String, passphrase: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["name": name, "key_data": key, "passphrase": passphrase]),
+              let json = String(data: data, encoding: .utf8),
+              let ptr = json.withCString({ c_hostshell_add_key(enginePtr, $0) }) else { return "保存失败" }
+        defer { c_hostshell_free_string(ptr) }
+        guard let response = try? JSONSerialization.jsonObject(with: Data(String(cString: ptr).utf8)) as? [String: Any] else { return "保存失败" }
+        return response["ok"] as? Bool == true ? nil : (response["error"] as? String ?? "保存失败")
+    }
+
+    public func deleteKey(_ id: String) -> Int32 { id.withCString { c_hostshell_delete_key(enginePtr, $0) } }
+
     deinit {
         if let ptr = enginePtr {
             c_hostshell_engine_free(ptr)
@@ -165,6 +193,13 @@ public final class HostShellBridge: @unchecked Sendable {
         return c_hostshell_delete_jump_host(ptr, id) == 0
     }
 
+    public func openLogDirectory() {
+        guard let ptr = c_hostshell_log_directory() else { return }
+        defer { c_hostshell_free_string(ptr) }
+        let path = String(cString: ptr)
+        NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
     public func importSshConfig(text: String) -> SshConfigImportResponse? {
         guard let ptr = enginePtr, let cStr = c_hostshell_import_ssh_config(ptr, text) else { return nil }
         defer { c_hostshell_free_string(cStr) }
@@ -193,23 +228,29 @@ public final class HostShellBridge: @unchecked Sendable {
 
         // Context box passed to C callbacks
         final class CallbackContext {
-            var bridge: SessionHandleBridge?
+            let onStage: (String) -> Void
+            let onOutput: (Data) -> Void
+
+            init(onStage: @escaping (String) -> Void, onOutput: @escaping (Data) -> Void) {
+                self.onStage = onStage
+                self.onOutput = onOutput
+            }
         }
-        let ctx = CallbackContext()
+        let ctx = CallbackContext(onStage: onStage, onOutput: onOutput)
         let ctxPtr = Unmanaged.passRetained(ctx).toOpaque()
 
         let stageCb: StageCallbackC = { cJson, userPtr in
             guard let cJson = cJson, let userPtr = userPtr else { return }
             let jsonString = String(cString: cJson)
             let box = Unmanaged<CallbackContext>.fromOpaque(userPtr).takeUnretainedValue()
-            box.bridge?.handleStageEvent(json: jsonString)
+            box.onStage(jsonString)
         }
 
         let outputCb: OutputCallbackC = { cBytes, len, userPtr in
             guard let cBytes = cBytes, len > 0, let userPtr = userPtr else { return }
             let dataChunk = Data(bytes: cBytes, count: len)
             let box = Unmanaged<CallbackContext>.fromOpaque(userPtr).takeUnretainedValue()
-            box.bridge?.handleOutput(data: dataChunk)
+            box.onOutput(dataChunk)
         }
 
         let sessPtr = c_hostshell_connect(
@@ -229,7 +270,6 @@ public final class HostShellBridge: @unchecked Sendable {
         }
 
         let sessionBridge = SessionHandleBridge(sessionPtr: validSess, onStage: onStage, onOutput: onOutput)
-        ctx.bridge = sessionBridge
         return sessionBridge
     }
 }

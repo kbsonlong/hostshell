@@ -74,12 +74,12 @@ public final class SessionViewModel: ObservableObject {
                 rows: 24,
                 autoAcceptNewKeys: true,
                 onStage: { [weak self] stageJson in
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         self?.handleStageJson(stageJson)
                     }
                 },
                 onOutput: { [weak self] data in
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         self?.handleRawOutput(data)
                     }
                 }

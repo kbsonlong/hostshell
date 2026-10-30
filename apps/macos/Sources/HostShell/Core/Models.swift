@@ -67,12 +67,16 @@ public enum AuthMethod: Codable, Equatable, Sendable {
     case password(String)
     case privateKey(keyData: String, passphrase: String?)
     case agent
+    case keyRef(id: String)
 
     enum CodingKeys: String, CodingKey {
         case password
         case private_key
+        case key_ref
         case agent
     }
+
+    private struct KeyRefPayload: Codable { let id: String }
 
     private struct PrivateKeyPayload: Codable {
         let key_data: String
@@ -91,6 +95,8 @@ public enum AuthMethod: Codable, Equatable, Sendable {
             self = .password(pwd)
         } else if let pk = try? container.decode(PrivateKeyPayload.self, forKey: .private_key) {
             self = .privateKey(keyData: pk.key_data, passphrase: pk.passphrase)
+        } else if let ref = try? container.decode(KeyRefPayload.self, forKey: .key_ref) {
+            self = .keyRef(id: ref.id)
         } else if (try? container.decodeNil(forKey: .agent)) == true {
             self = .agent
         } else {
@@ -105,6 +111,8 @@ public enum AuthMethod: Codable, Equatable, Sendable {
             try container.encode(pwd, forKey: .password)
         case .privateKey(let keyData, let passphrase):
             try container.encode(PrivateKeyPayload(key_data: keyData, passphrase: passphrase), forKey: .private_key)
+        case .keyRef(let id):
+            try container.encode(KeyRefPayload(id: id), forKey: .key_ref)
         case .agent:
             try container.encodeNil(forKey: .agent)
         }
@@ -144,6 +152,9 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
     public var username: String
     public var auth: AuthMethod
     public var proxy_mode: ProxyMode
+    public var forward_agent: Bool?
+    public var forward_agent_host_ids: [String]?
+    public var forward_agent_key_ids: [String]?
     public var jump_host_ids: [String]
     public var cloudflare_config: CloudflareConfig?
     public var tags: [String]
@@ -159,6 +170,9 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         username: String = "root",
         auth: AuthMethod = .password(""),
         proxy_mode: ProxyMode = .direct,
+        forward_agent: Bool = false,
+        forward_agent_host_ids: [String] = [],
+        forward_agent_key_ids: [String] = [],
         jump_host_ids: [String] = [],
         cloudflare_config: CloudflareConfig? = nil,
         tags: [String] = [],
@@ -173,6 +187,9 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         self.username = username
         self.auth = auth
         self.proxy_mode = proxy_mode
+        self.forward_agent = forward_agent
+        self.forward_agent_host_ids = forward_agent_host_ids
+        self.forward_agent_key_ids = forward_agent_key_ids
         self.jump_host_ids = jump_host_ids
         self.cloudflare_config = cloudflare_config
         self.tags = tags
@@ -239,4 +256,11 @@ public struct SshConfigImportResponse: Codable {
         case jumpHosts = "jump_hosts"
         case warnings
     }
+}
+
+public struct SSHKeyMetadata: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let fingerprint: String
+    public let algorithm: String
 }

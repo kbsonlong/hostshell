@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 
 @_silgen_name("hostshell_engine_init") private func c_engine_init() -> OpaquePointer?
 @_silgen_name("hostshell_engine_free") private func c_engine_free(_ engine: OpaquePointer?)
+@_silgen_name("hostshell_list_keys") private func c_list_keys(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_add_key") private func c_add_key(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_delete_key") private func c_delete_key(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_free_string") private func c_free_string(_ ptr: UnsafeMutablePointer<CChar>?)
 @_silgen_name("hostshell_list_hosts") private func c_list_hosts(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_save_host") private func c_save_host(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> Int32
@@ -33,6 +36,7 @@ struct ImportResponse: Decodable {
 final class AppModel: ObservableObject {
     @Published var hosts: [Host] = []
     @Published var jumps: [JumpHost] = []
+    @Published var keys: [SSHKeyMetadata] = []
     @Published var error: String?
     private var engine = c_engine_init()
 
@@ -42,6 +46,23 @@ final class AppModel: ObservableObject {
     func reload() {
         hosts = decodeArray(c_list_hosts(engine))
         jumps = decodeArray(c_list_jumps(engine))
+        keys = decodeArray(c_list_keys(engine))
+    }
+
+    func addKey(name: String, key: String, passphrase: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["name": name, "key_data": key, "passphrase": passphrase]),
+              let json = String(data: data, encoding: .utf8),
+              let ptr = json.withCString({ c_add_key(engine, $0) }) else { return "保存失败" }
+        defer { c_free_string(ptr) }
+        guard let result = try? JSONSerialization.jsonObject(with: Data(String(cString: ptr).utf8)) as? [String: Any] else { return "保存失败" }
+        if result["ok"] as? Bool == true { reload(); return nil }
+        return result["error"] as? String ?? "保存失败"
+    }
+
+    func deleteKey(_ id: String) -> String? {
+        let rc = id.withCString { c_delete_key(engine, $0) }
+        if rc == 0 { reload(); return nil }
+        return rc == -2 ? "该证书仍被主机或 Agent 转发使用，请先解除引用。" : "删除失败，请检查 Keychain。"
     }
 
     func save(_ host: Host) {
@@ -139,6 +160,7 @@ struct HostListScreen: View {
     @State private var editingNew = false
     @State private var showingImport = false
     @State private var showingJumps = false
+    @State private var showingKeys = false
 
     var body: some View {
         NavigationStack {
@@ -167,6 +189,7 @@ struct HostListScreen: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) { model.delete(host) } label: { Label("删除", systemImage: "trash") }
+                            Button { editorHost = host } label: { Label("编辑", systemImage: "pencil") }.tint(.blue)
                         }
                     }
                 }
@@ -178,13 +201,16 @@ struct HostListScreen: View {
                         .accessibilityLabel("跳板机资产")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingKeys = true } label: { Image(systemName: "key.fill") }.accessibilityLabel("证书管理")
                     Button { showingImport = true } label: { Image(systemName: "square.and.arrow.down") }.accessibilityLabel("导入 SSH 配置")
                     Button { editingNew = true } label: { Image(systemName: "plus") }.accessibilityLabel("添加主机")
                 }
             }
             .sheet(isPresented: $editingNew) { HostEditor(host: Host(), onSave: model.save) }
+            .sheet(item: $editorHost) { HostEditor(host: $0, onSave: model.save) }
             .sheet(isPresented: $showingImport) { ImportSheet() }
             .sheet(isPresented: $showingJumps) { JumpHostListSheet() }
+            .sheet(isPresented: $showingKeys) { KeyManagementSheet() }
             .alert("HostShell", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
                 Button("好", role: .cancel) { model.error = nil }
             } message: { Text(model.error ?? "") }
@@ -199,9 +225,15 @@ struct HostEditor: View {
     let onSave: (Host) -> Void
     @State private var password = ""
     @State private var keyData = ""
+    @State private var passphrase = ""
     @State private var useKey = false
+    @State private var useSavedKey = false
+    @State private var selectedKeyId = ""
     @State private var tagText = ""
     @State private var selectedJumpID = ""
+    @State private var forwardAgent = false
+    @State private var forwardKeyIds: [String] = []
+    @State private var forwardCertificateId = ""
 
     var body: some View {
         NavigationStack {
@@ -213,12 +245,21 @@ struct HostEditor: View {
                     TextField("端口", value: $host.port, format: .number).keyboardType(.numberPad)
                 }
                 Section("认证") {
+                    Toggle("使用已保存证书", isOn: $useSavedKey)
+                    if useSavedKey {
+                        Picker("证书", selection: $selectedKeyId) {
+                            Text("选择证书").tag("")
+                            ForEach(model.keys) { Text($0.name).tag($0.id) }
+                        }
+                    } else {
                     Picker("认证方式", selection: $useKey) { Text("密码").tag(false); Text("私钥").tag(true) }.pickerStyle(.segmented)
                     if useKey {
                         TextEditor(text: $keyData).frame(minHeight: 130).textInputAutocapitalization(.never).autocorrectionDisabled()
                             .overlay(alignment: .topLeading) { if keyData.isEmpty { Text("粘贴 OpenSSH 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) } }
+                        SecureField("私钥密码（可选）", text: $passphrase)
                     } else {
                         SecureField("密码", text: $password)
+                    }
                     }
                 }
                 Section("连接方式") {
@@ -233,20 +274,102 @@ struct HostEditor: View {
                     }
                     TextField("标签（逗号分隔）", text: $tagText)
                 }
+                Section("SSH Agent 转发") {
+                    Toggle("转发应用内 SSH Agent", isOn: $forwardAgent)
+                    if forwardAgent {
+                        Picker("转发证书", selection: $forwardCertificateId) {
+                            Text("选择证书").tag("")
+                            ForEach(model.keys) { Text($0.name).tag($0.id) }
+                        }
+                        Text("仅对可信主机启用，选择允许远端使用的私钥。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if useKey && !useSavedKey { Toggle("当前主机的私钥", isOn: keyBinding(host.id)) }
+                        ForEach(model.hosts.filter { item in
+                            guard item.id != host.id else { return false }
+                            if case .privateKey = item.auth { return true }
+                            return false
+                        }) { item in
+                            Toggle(item.name, isOn: keyBinding(item.id))
+                        }
+                    }
+                }
             }
             .navigationTitle("添加主机")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        host.auth = useKey ? .privateKey(keyData: keyData, passphrase: nil) : .password(password)
+                        host.auth = useSavedKey ? .keyRef(id: selectedKeyId) : (useKey ? .privateKey(keyData: keyData, passphrase: passphrase.isEmpty ? nil : passphrase) : .password(password))
+                        host.forward_agent = forwardAgent
+                        host.forward_agent_host_ids = forwardAgent ? forwardKeyIds : []
+                        host.forward_agent_key_ids = forwardAgent && !forwardCertificateId.isEmpty ? [forwardCertificateId] : []
                         host.jump_host_ids = selectedJumpID.isEmpty ? [] : [selectedJumpID]
                         host.tags = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                         onSave(host)
                         dismiss()
-                    }.disabled(host.name.isEmpty || host.hostname.isEmpty || (host.proxy_mode == .proxyJump && selectedJumpID.isEmpty))
+                    }.disabled(host.name.isEmpty || host.hostname.isEmpty || (host.proxy_mode == .proxyJump && selectedJumpID.isEmpty) || (useSavedKey && !model.keys.contains(where: { $0.id == selectedKeyId })) || (forwardAgent && forwardKeyIds.isEmpty && forwardCertificateId.isEmpty) || (forwardAgent && forwardKeyIds.contains(host.id) && (useSavedKey || !useKey)))
                 }
             }
+        }
+        .onAppear {
+            switch host.auth {
+            case .password(let value): password = value
+            case .privateKey(let value, let phrase): useKey = true; keyData = value; passphrase = phrase ?? ""
+            case .keyRef(let id): useSavedKey = true; selectedKeyId = id
+            case .agent: break
+            }
+            selectedJumpID = host.jump_host_ids.first ?? ""
+            tagText = host.tags.joined(separator: ", ")
+            forwardAgent = host.forward_agent ?? false
+            forwardKeyIds = host.forward_agent_host_ids ?? []
+            forwardCertificateId = host.forward_agent_key_ids?.first ?? ""
+        }
+    }
+
+    private func keyBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { forwardKeyIds.contains(id) }, set: { selected in
+            if selected {
+                if !forwardKeyIds.contains(id) { forwardKeyIds.append(id) }
+            } else { forwardKeyIds.removeAll { $0 == id } }
+        })
+    }
+}
+
+struct KeyManagementSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var key = ""
+    @State private var passphrase = ""
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("已保存证书") {
+                    ForEach(model.keys) { item in
+                        VStack(alignment: .leading) {
+                            Text(item.name)
+                            Text("\(item.algorithm) · \(item.fingerprint)").font(.caption).textSelection(.enabled)
+                            Button("删除", role: .destructive) { error = model.deleteKey(item.id) }
+                        }
+                    }
+                }
+                Section("导入 SSH 私钥") {
+                    TextField("证书名称", text: $name)
+                    TextEditor(text: $key).frame(minHeight: 140).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("私钥密码（可选）", text: $passphrase)
+                    Text("私钥保存在 Keychain，可供主机认证和 Agent 转发使用。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("保存证书") {
+                        error = model.addKey(name: name, key: key, passphrase: passphrase)
+                        if error == nil { name = ""; key = ""; passphrase = "" }
+                    }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || key.isEmpty)
+                }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle("证书管理")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
 }
@@ -261,6 +384,7 @@ struct JumpHostListSheet: View {
     @State private var password = ""
     @State private var keyData = ""
     @State private var useAgent = false
+    @State private var selectedKeyId = ""
 
     var body: some View {
         NavigationStack {
@@ -277,11 +401,17 @@ struct JumpHostListSheet: View {
                     TextField("端口", value: $port, format: .number).keyboardType(.numberPad)
                     Toggle("使用外部 ssh-agent（iOS 通常不可用）", isOn: $useAgent)
                     if !useAgent {
+                        Picker("已保存证书", selection: $selectedKeyId) {
+                            Text("不使用证书").tag("")
+                            ForEach(model.keys) { Text($0.name).tag($0.id) }
+                        }
+                        if selectedKeyId.isEmpty {
                         SecureField("密码", text: $password)
                         TextField("私钥（可选，粘贴）", text: $keyData, axis: .vertical).lineLimit(2...6).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        }
                     }
                     Button("保存跳板机") {
-                        let auth: AuthMethod = useAgent ? .agent : (keyData.isEmpty ? .password(password) : .privateKey(keyData: keyData, passphrase: nil))
+                        let auth: AuthMethod = useAgent ? .agent : (!selectedKeyId.isEmpty ? .keyRef(id: selectedKeyId) : (keyData.isEmpty ? .password(password) : .privateKey(keyData: keyData, passphrase: nil)))
                         model.save(JumpHost(name: name, hostname: hostname, port: port, username: username, auth: auth))
                         name = ""; hostname = ""; password = ""; keyData = ""
                     }.disabled(name.isEmpty || hostname.isEmpty || username.isEmpty)

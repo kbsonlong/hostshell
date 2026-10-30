@@ -47,6 +47,18 @@ public struct SettingsView: View {
                     .padding(6)
                 }
 
+                GroupBox(label: Label("本地连接日志", systemImage: "doc.text.magnifyingglass")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("记录连接阶段、SSH Agent 身份尝试和错误详情；不会记录密码、私钥或终端输出。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Button("在 Finder 中打开日志目录") {
+                            HostShellBridge.shared.openLogDirectory()
+                        }
+                    }
+                    .padding(6)
+                }
+
                 GroupBox(label: Label("关于 HostShell", systemImage: "info.circle")) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {

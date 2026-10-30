@@ -32,6 +32,7 @@ cp "$REPO_ROOT/target/release/libhostshell_core.dylib" "$APP_DIR/Contents/Framew
 # Fix rpath in binary and dylib
 install_name_tool -change "$REPO_ROOT/target/debug/deps/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
 install_name_tool -change "$REPO_ROOT/target/release/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
+install_name_tool -change "$REPO_ROOT/target/release/deps/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
 install_name_tool -add_rpath "@loader_path/../Frameworks" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
 install_name_tool -id "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/Frameworks/libhostshell_core.dylib" 2>/dev/null || true
 

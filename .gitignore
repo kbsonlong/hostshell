@@ -1,3 +1,4 @@
 /target
 /apps/macos/.build
 .DS_Store
+apps/ios/.build

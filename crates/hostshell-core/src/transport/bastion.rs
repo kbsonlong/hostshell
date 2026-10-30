@@ -146,6 +146,7 @@ pub async fn connect_bastion_chain(
                     }
                 }
             }
+            AuthMethod::KeyRef { .. } => unreachable!(),
         };
 
         // Fallback: server only offers keyboard-interactive (PAM/MFA bastions).
