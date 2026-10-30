@@ -34,34 +34,154 @@ pub enum SessionCommand {
     Close,
 }
 
-/// Authenticate `user` against `handle` using identities from ssh-agent (SSH_AUTH_SOCK).
+/// Collect candidate ssh-agent socket paths.
 ///
+/// Order: $SSH_AUTH_SOCK → `launchctl getenv` (macOS GUI session) →
+/// common socket paths (~/.ssh/agent/s.*, /tmp/ssh-*/agent.*).
+fn candidate_agent_sockets() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut push_if_exists = |p: PathBuf, out: &mut Vec<PathBuf>| {
+        if !out.contains(&p) && p.exists() {
+            out.push(p);
+        }
+    };
+
+    if let Ok(s) = std::env::var("SSH_AUTH_SOCK") {
+        if !s.is_empty() {
+            push_if_exists(PathBuf::from(s), &mut out);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(launch_out) = std::process::Command::new("launchctl")
+            .args(["getenv", "SSH_AUTH_SOCK"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&launch_out.stdout).trim().to_string();
+            if !s.is_empty() {
+                push_if_exists(PathBuf::from(s), &mut out);
+            }
+        }
+    }
+
+    let home = std::env::var("HOME").ok().unwrap_or_default();
+    // Per-user agent sockets (e.g. created by `launchd ssh-agent -l`)
+    if let Ok(rd) = std::fs::read_dir(PathBuf::from(&home).join(".ssh/agent")) {
+        let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        // Prefer the most recently modified socket (stale ones linger for weeks)
+        paths.sort_by_key(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(std::cmp::Reverse)
+        });
+        out.extend(paths);
+    }
+    // Linux/OpenSSH default launchd-style sockets
+    if let Ok(rd) = std::fs::read_dir("/tmp") {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("ssh-") {
+                if let Ok(sub) = std::fs::read_dir(e.path()) {
+                    for f in sub.flatten() {
+                        let fname = f.file_name();
+                        if fname.to_string_lossy().starts_with("agent.") {
+                            push_if_exists(f.path(), &mut out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Authenticate `user` against `handle` using identities from ssh-agent.
+///
+/// Socket discovery: $SSH_AUTH_SOCK → launchctl getenv → common paths.
 /// Tries every loaded identity in turn; stops at the first success.
 /// Note: OpenSSH certificate identities held in the agent are offered as plain
 /// public keys (russh 0.65 has no dedicated agent-certificate auth path).
+/// Probe every candidate agent socket with a short timeout and pick the best
+/// one: prefers a live socket that holds identities, skips hung/dead sockets.
 pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     handle: &mut russh::client::Handle<H>,
     user: &str,
 ) -> std::result::Result<russh::client::AuthResult, String> {
     use russh::keys::agent::client::AgentClient;
 
-    let mut agent = AgentClient::connect_env().await.map_err(|e| {
-        format!("无法连接 ssh-agent（SSH_AUTH_SOCK 未设置或 socket 不可达）: {e}")
-    })?;
-    let identities = agent
-        .request_identities()
-        .await
-        .map_err(|e| format!("读取 ssh-agent 密钥列表失败: {e}"))?;
-    if identities.is_empty() {
-        return Err("ssh-agent 中没有已加载的密钥（先运行 ssh-add <key>）".to_string());
+    let candidates = candidate_agent_sockets();
+    if candidates.is_empty() {
+        return Err("未找到 ssh-agent（SSH_AUTH_SOCK 未设置且常见路径下没有 agent socket）".to_string());
     }
 
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
+    let mut empty_live: Option<AgentClient<tokio::net::UnixStream>> = None;
+    let mut last_detail = String::new();
+
+    for sock in &candidates {
+        let probe = async {
+            let mut agent = AgentClient::connect_uds(sock).await?;
+            let identities = agent.request_identities().await?;
+            Ok::<_, russh::keys::Error>((agent, identities))
+        };
+        match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+            Ok(Ok((mut agent, identities))) => {
+                if identities.is_empty() {
+                    if empty_live.is_none() {
+                        last_detail = format!("{}: agent 可用但没有已加载的密钥", sock.display());
+                        empty_live = Some(agent);
+                    }
+                    continue;
+                }
+                tracing::info!(
+                    "Using ssh-agent socket {} ({} identities)",
+                    sock.display(),
+                    identities.len()
+                );
+                return try_agent_identities(&mut agent, &identities, handle, user).await;
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("agent socket {} unusable: {e}", sock.display());
+                last_detail = format!("{}: {e}", sock.display());
+            }
+            Err(_) => {
+                tracing::debug!("agent socket {} did not respond in time; skipped", sock.display());
+                last_detail = format!("{}: 无响应（已跳过）", sock.display());
+            }
+        }
+    }
+
+    if let Some(mut agent) = empty_live {
+        let identities = agent
+            .request_identities()
+            .await
+            .map_err(|e| format!("读取 ssh-agent 密钥列表失败: {e}"))?;
+        return try_agent_identities(&mut agent, &identities, handle, user).await;
+    }
+    Err(format!(
+        "没有可用的 ssh-agent 密钥（最后探测: {last_detail}）。请先 ssh-add <key>"
+    ))
+}
+
+/// Offer each agent identity to the server until one is accepted.
+async fn try_agent_identities<H: russh::client::Handler>(
+    agent: &mut russh::keys::agent::client::AgentClient<tokio::net::UnixStream>,
+    identities: &[russh::keys::agent::AgentIdentity],
+    handle: &mut russh::client::Handle<H>,
+    user: &str,
+) -> std::result::Result<russh::client::AuthResult, String> {
     let failure = russh::client::AuthResult::Failure {
         remaining_methods: russh::MethodSet::empty(),
         partial_success: false,
     };
     let mut last = failure;
-    for identity in &identities {
+    for identity in identities {
         let key = identity.public_key().into_owned();
         tracing::info!(
             "Trying ssh-agent identity: {} ({})",
@@ -77,7 +197,7 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
             None
         };
         last = handle
-            .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+            .authenticate_publickey_with(user, key, hash_alg, agent)
             .await
             .map_err(|e| format!("ssh-agent 签名请求失败: {e}"))?;
         if matches!(last, russh::client::AuthResult::Success) {
