@@ -87,6 +87,93 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     Ok(last)
 }
 
+/// Authenticate `user` via keyboard-interactive (PAM/MFA bastions).
+///
+/// Prompts are printed to stderr and answered from stdin; prompt input with
+/// `echo=false` is read without local echo. Runs as a fallback when the
+/// server rejects other methods and only offers keyboard-interactive.
+pub(crate) async fn authenticate_keyboard_interactive<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
+    user: &str,
+) -> std::result::Result<russh::client::AuthResult, String> {
+    use russh::client::KeyboardInteractiveAuthResponse;
+    use std::io::Write as _;
+
+    let mut resp = handle
+        .authenticate_keyboard_interactive_start(user, None)
+        .await
+        .map_err(|e| format!("keyboard-interactive 启动失败: {e}"))?;
+
+    loop {
+        match resp {
+            KeyboardInteractiveAuthResponse::Success => {
+                return Ok(russh::client::AuthResult::Success);
+            }
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
+                return Ok(russh::client::AuthResult::Failure {
+                    remaining_methods: russh::MethodSet::empty(),
+                    partial_success: false,
+                });
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                eprintln!("[auth] {name}");
+                if !instructions.is_empty() {
+                    eprintln!("[auth] {instructions}");
+                }
+                let mut answers = Vec::with_capacity(prompts.len());
+                for p in &prompts {
+                    eprint!("[auth] {} ", p.prompt);
+                    let _ = std::io::stderr().flush();
+                    let line = if p.echo {
+                        read_line()
+                    } else {
+                        read_line_noecho()
+                    };
+                    answers.push(line);
+                }
+                resp = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .map_err(|e| format!("keyboard-interactive 应答失败: {e}"))?;
+            }
+        }
+    }
+}
+
+fn read_line() -> String {
+    let mut s = String::new();
+    let _ = std::io::stdin().read_line(&mut s);
+    s.trim_end_matches(['\r', '\n']).to_string()
+}
+
+#[cfg(unix)]
+fn read_line_noecho() -> String {
+    use std::os::unix::io::AsRawFd;
+    unsafe {
+        let fd = std::io::stdin().as_raw_fd();
+        let mut old: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut old) != 0 {
+            return read_line();
+        }
+        let mut noecho = old;
+        noecho.c_lflag &= !libc::ECHO;
+        libc::tcsetattr(fd, libc::TCSANOW, &noecho);
+        let s = read_line();
+        libc::tcsetattr(fd, libc::TCSANOW, &old);
+        eprintln!();
+        s
+    }
+}
+
+#[cfg(not(unix))]
+fn read_line_noecho() -> String {
+    read_line()
+}
+
 pub struct SessionHandle {
     pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub output_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -278,7 +365,7 @@ impl SshSession {
             method: auth_desc.to_string(),
         }));
 
-        let auth_res = match &host.auth {
+        let mut auth_res = match &host.auth {
             AuthMethod::Password(pwd) => handle.authenticate_password(&host.username, pwd).await,
             AuthMethod::PrivateKey { key_data, passphrase } => {
                 let decoded = load_private_key(key_data, passphrase.as_deref(), &host.username)?;
@@ -332,6 +419,31 @@ impl SshSession {
                 }
             }
         };
+
+        // Fallback: server only offers keyboard-interactive (PAM/MFA bastions).
+        if let Ok(russh::client::AuthResult::Failure { remaining_methods, .. }) = &auth_res {
+            if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::AuthenticatingUser {
+                    username: host.username.clone(),
+                    method: "keyboard-interactive".to_string(),
+                }));
+                auth_res = match authenticate_keyboard_interactive(&mut handle, &host.username).await {
+                    Ok(res) => Ok(res),
+                    Err(reason) => {
+                        let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                            failed_stage: "AuthenticatingUser".to_string(),
+                            error_category: "AuthError".to_string(),
+                            message: reason.clone(),
+                            suggestion: "按提示输入认证信息后重试.".into(),
+                        }));
+                        return Err(HostShellError::AuthenticationFailed {
+                            user: host.username.clone(),
+                            reason,
+                        });
+                    }
+                };
+            }
+        }
 
         match auth_res {
             Ok(russh::client::AuthResult::Success) => {

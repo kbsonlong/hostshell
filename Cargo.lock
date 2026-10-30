@@ -798,6 +798,7 @@ dependencies = [
  "async-trait",
  "base64",
  "futures-util",
+ "libc",
  "pin-project-lite",
  "russh",
  "serde",

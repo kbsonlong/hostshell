@@ -112,7 +112,7 @@ pub async fn connect_bastion_chain(
             ))
         })?;
 
-        let auth_res = match &hop.auth {
+        let mut auth_res = match &hop.auth {
             AuthMethod::Password(pwd) => {
                 handle.authenticate_password(&hop.username, pwd).await
             }
@@ -147,6 +147,30 @@ pub async fn connect_bastion_chain(
                 }
             }
         };
+
+        // Fallback: server only offers keyboard-interactive (PAM/MFA bastions).
+        if let Ok(russh::client::AuthResult::Failure { remaining_methods, .. }) = &auth_res {
+            if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) {
+                if let Some(tx) = stage_tx.as_ref() {
+                    let _ = tx.send(StageEvent::now(ConnectionStage::AuthenticatingUser {
+                        username: hop.username.clone(),
+                        method: "keyboard-interactive".to_string(),
+                    }));
+                }
+                auth_res = match
+                    crate::ssh::session::authenticate_keyboard_interactive(&mut handle, &hop.username)
+                        .await
+                {
+                    Ok(res) => Ok(res),
+                    Err(reason) => {
+                        return Err(HostShellError::AuthenticationFailed {
+                            user: hop.username.clone(),
+                            reason: format!("Jump host {}: {}", hop.name, reason),
+                        });
+                    }
+                };
+            }
+        }
 
         match auth_res {
             Ok(russh::client::AuthResult::Success) => {
