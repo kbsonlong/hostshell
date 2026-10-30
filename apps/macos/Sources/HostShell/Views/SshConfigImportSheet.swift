@@ -6,6 +6,8 @@ public struct SshConfigImportSheet: View {
 
     @State private var configText: String = ""
     @State private var previewResponse: SshConfigImportResponse? = nil
+    @State private var errorMessage: String? = nil
+    @State private var showingFilePicker = false
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -22,9 +24,16 @@ public struct SshConfigImportSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("从剪贴板粘贴本地 ~/.ssh/config 片段：")
+                Text("从配置文件读取或粘贴 OpenSSH config 内容：")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+
+                Button {
+                    showingFilePicker = true
+                } label: {
+                    Label("选择 ~/.ssh/config 或 joyy 文件…", systemImage: "doc.badge.arrow.up")
+                }
+                .controlSize(.small)
 
                 TextEditor(text: $configText)
                     .font(.system(.caption, design: .monospaced))
@@ -48,10 +57,20 @@ public struct SshConfigImportSheet: View {
                     .controlSize(.small)
                 }
 
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(6)
+                }
+
                 if let resp = previewResponse {
                     Divider()
 
-                    Text("解析预览 (发现 \(resp.hosts.count) 个主机，\(resp.warnings.count) 条提示):")
+                    Text("解析预览：\(resp.hosts.count) 台主机，\(resp.jumpHosts?.count ?? 0) 个跳板机资产，\(resp.warnings.count) 条提示")
                         .font(.headline)
 
                     if !resp.warnings.isEmpty {
@@ -111,9 +130,42 @@ public struct SshConfigImportSheet: View {
             .background(Color(NSColor.windowBackgroundColor))
         }
         .frame(width: 560, height: 560)
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.plainText, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    configText = try String(contentsOf: url, encoding: .utf8)
+                    errorMessage = nil
+                    parse()
+                } catch {
+                    previewResponse = nil
+                    errorMessage = "读取文件失败：\(error.localizedDescription)"
+                }
+            case .failure(let error):
+                errorMessage = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     private func parse() {
-        previewResponse = HostShellBridge.shared.importSshConfig(text: configText)
+        guard !configText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            previewResponse = nil
+            errorMessage = "配置内容为空。请选择 ~/.ssh/config 或 joyy 文件，或粘贴配置文本。"
+            return
+        }
+        guard let response = HostShellBridge.shared.importSshConfig(text: configText) else {
+            previewResponse = nil
+            errorMessage = "配置解析失败，请确认文件是 UTF-8 编码的 OpenSSH config。"
+            return
+        }
+        previewResponse = response
+        errorMessage = response.hosts.isEmpty
+            ? "没有识别到可导入的 Host。请粘贴文件内容或使用上方选择文件，不能只输入文件路径。"
+            : nil
     }
 }
