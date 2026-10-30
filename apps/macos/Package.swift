@@ -9,9 +9,15 @@ let package = Package(
     products: [
         .executable(name: "HostShell", targets: ["HostShell"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMinor(from: "1.2.0"))
+    ],
     targets: [
         .executableTarget(
             name: "HostShell",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm")
+            ],
             path: "Sources/HostShell",
             linkerSettings: [
                 .unsafeFlags([

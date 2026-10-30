@@ -38,7 +38,18 @@ public final class SessionViewModel: ObservableObject {
     @Published public var failureInfo: FailureInfo? = nil
     @Published public var hostKeyPrompt: HostKeyPromptInfo? = nil
 
-    @Published public var terminalOutput: String = ""
+    /// Raw byte chunks pending for the terminal emulator (SwiftTerm drains this).
+    private var pendingOutput = Data()
+    /// Bumped on every output chunk so SwiftUI re-renders and drains the buffer.
+    @Published public var outputRevision: Int = 0
+
+    /// Drain accumulated raw output bytes for the terminal emulator.
+    public func takePendingOutput() -> Data? {
+        guard !pendingOutput.isEmpty else { return nil }
+        let data = pendingOutput
+        pendingOutput.removeAll()
+        return data
+    }
 
     public init(host: Host) {
         self.host = host
@@ -51,7 +62,6 @@ public final class SessionViewModel: ObservableObject {
         isDisconnected = false
         failureInfo = nil
         stages.removeAll()
-        terminalOutput.removeAll()
 
         let targetHost = self.host
         let coreBridge = self.bridge
@@ -138,14 +148,8 @@ public final class SessionViewModel: ObservableObject {
     }
 
     private func handleRawOutput(_ data: Data) {
-        if let str = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) {
-            terminalOutput.append(str)
-            // Limit buffer to roughly 20,000 characters to prevent high memory usage
-            if terminalOutput.count > 30000 {
-                let startIdx = terminalOutput.index(terminalOutput.endIndex, offsetBy: -20000)
-                terminalOutput = String(terminalOutput[startIdx...])
-            }
-        }
+        pendingOutput.append(data)
+        outputRevision += 1
     }
 
     private func handleStageJson(_ jsonStr: String) {

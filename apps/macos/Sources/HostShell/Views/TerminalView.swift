@@ -1,12 +1,87 @@
 import SwiftUI
 import AppKit
+import SwiftTerm
+
+// ── SwiftTerm bridge ─────────────────────────────────────────────────────────
+
+/// Wraps SwiftTerm's AppKit TerminalView for SwiftUI and wires it to the SSH session.
+struct SwiftTermRepresentable: NSViewRepresentable {
+    @ObservedObject var sessionVM: SessionViewModel
+
+    func makeNSView(context: Context) -> SwiftTerm.TerminalView {
+        let tv = SwiftTerm.TerminalView(frame: .zero)
+        tv.terminalDelegate = context.coordinator
+        return tv
+    }
+
+    func updateNSView(_ tv: SwiftTerm.TerminalView, context: Context) {
+        context.coordinator.sessionVM = sessionVM
+        // Drain raw SSH output into the terminal emulator
+        if let data = sessionVM.takePendingOutput() {
+            tv.feed(byteArray: Array(data)[...])
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(sessionVM: sessionVM)
+    }
+
+    final class Coordinator: TerminalViewDelegate {
+        var sessionVM: SessionViewModel
+
+        init(sessionVM: SessionViewModel) {
+            self.sessionVM = sessionVM
+        }
+
+        /// Keystrokes from the emulated terminal → SSH channel.
+        /// AppKit invokes this on the main thread; assumeIsolated is safe here.
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            MainActor.assumeIsolated {
+                sessionVM.sendBytes(Array(data))
+            }
+        }
+
+        /// Terminal layout changes (window resize, font change) → SSH window-change.
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            MainActor.assumeIsolated {
+                sessionVM.resize(cols: UInt32(newCols), rows: UInt32(newRows))
+            }
+        }
+
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
+            // Header bar already shows host identity; ignore remote titles for now.
+        }
+
+        func setTerminalIconTitle(source: SwiftTerm.TerminalView, title: String) {}
+
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
+
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
+
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
+            if let url = URL(string: link), NSWorkspace.shared.open(url) { return }
+        }
+
+        func bell(source: SwiftTerm.TerminalView) {
+            NSSound.beep()
+        }
+
+        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(content, forType: .string)
+        }
+
+        func iTermContent(source: SwiftTerm.TerminalView, content: ArraySlice<UInt8>) {}
+
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
+    }
+}
+
+// ── Session terminal screen ──────────────────────────────────────────────────
 
 public struct TerminalView: View {
     @ObservedObject var sessionVM: SessionViewModel
     public let onClose: () -> Void
-
-    @State private var inputText: String = ""
-    @FocusState private var isInputFocused: Bool
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -52,63 +127,9 @@ public struct TerminalView: View {
 
             Divider()
 
-            // Terminal Screen Buffer
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(sessionVM.terminalOutput.isEmpty ? "连接中..." : sessionVM.terminalOutput)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(.green)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .id("terminal_bottom")
-                }
-                .background(Color.black)
-                .onChange(of: sessionVM.terminalOutput) { _ in
-                    withAnimation {
-                        proxy.scrollTo("terminal_bottom", anchor: .bottom)
-                    }
-                }
-            }
-
-            // Hidden or input capture field for keystrokes
-            HStack(spacing: 8) {
-                Text(">")
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundColor(.secondary)
-
-                TextField("在此键入命令并回车...", text: $inputText)
-                    .font(.system(size: 13, design: .monospaced))
-                    .textFieldStyle(.plain)
-                    .focused($isInputFocused)
-                    .onSubmit {
-                        if !inputText.isEmpty {
-                            sessionVM.sendInput(inputText + "\n")
-                            inputText = ""
-                        }
-                    }
-
-                if !inputText.isEmpty {
-                    Button("发送") {
-                        sessionVM.sendInput(inputText + "\n")
-                        inputText = ""
-                    }
-                    .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
-
-            Divider()
-
-            // Fixed Auxiliary Toolbar
-            TerminalAccessoryBar { key in
-                sessionVM.sendSpecialKey(key)
-            }
-        }
-        .onAppear {
-            isInputFocused = true
-            sessionVM.resize(cols: 100, rows: 35)
+            // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
+            SwiftTermRepresentable(sessionVM: sessionVM)
+                .ignoresSafeArea(edges: .bottom)
         }
     }
 }
