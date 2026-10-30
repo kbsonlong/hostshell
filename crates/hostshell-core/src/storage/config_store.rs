@@ -53,13 +53,13 @@ impl ConfigStore {
     fn default_data_dir() -> Result<PathBuf> {
         if let Some(home) = std::env::var_os("HOME") {
             let mut p = PathBuf::from(home);
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 p.push("Library");
                 p.push("Application Support");
                 p.push("HostShell");
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             {
                 p.push(".config");
                 p.push("hostshell");

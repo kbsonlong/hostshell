@@ -38,6 +38,7 @@ pub enum SessionCommand {
 ///
 /// Order: $SSH_AUTH_SOCK → `launchctl getenv` (macOS GUI session) →
 /// common socket paths (~/.ssh/agent/s.*, /tmp/ssh-*/agent.*).
+#[cfg(not(target_os = "ios"))]
 fn candidate_agent_sockets() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
@@ -109,6 +110,7 @@ fn candidate_agent_sockets() -> Vec<std::path::PathBuf> {
 /// public keys (russh 0.65 has no dedicated agent-certificate auth path).
 /// Probe every candidate agent socket with a short timeout and pick the best
 /// one: prefers a live socket that holds identities, skips hung/dead sockets.
+#[cfg(not(target_os = "ios"))]
 pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     handle: &mut russh::client::Handle<H>,
     user: &str,
@@ -169,7 +171,16 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     ))
 }
 
-/// Offer each agent identity to the server until one is accepted.
+/// iOS is sandboxed and does not expose Unix-domain ssh-agent sockets.
+#[cfg(target_os = "ios")]
+pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
+    _handle: &mut russh::client::Handle<H>,
+    _user: &str,
+) -> std::result::Result<russh::client::AuthResult, String> {
+    Err("iOS 不支持外部 ssh-agent；请为主机配置密码或导入私钥".to_string())
+}
+
+#[cfg(not(target_os = "ios"))]
 async fn try_agent_identities<H: russh::client::Handler>(
     agent: &mut russh::keys::agent::client::AgentClient<tokio::net::UnixStream>,
     identities: &[russh::keys::agent::AgentIdentity],

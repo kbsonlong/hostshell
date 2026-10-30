@@ -2,6 +2,17 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Homebrew's rustc may not contain rustup-installed Apple std targets. Prefer
+# the rustup stable toolchain when available so device/simulator builds use
+# the same sysroot that `rustup target add` manages.
+if command -v rustup >/dev/null 2>&1; then
+    RUSTUP_CARGO="$(rustup which cargo --toolchain stable 2>/dev/null || true)"
+    if [ -n "$RUSTUP_CARGO" ]; then
+        export PATH="$(dirname "$RUSTUP_CARGO"):$PATH"
+    fi
+fi
+
 echo "==> Building hostshell-core for iOS targets..."
 
 # Supported iOS targets
