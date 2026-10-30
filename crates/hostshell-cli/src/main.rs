@@ -121,6 +121,8 @@ fn print_usage() {
     println!("    --port <port>                            SSH port (default: 22)");
     println!("    --password <pwd>                         Password auth");
     println!("    --identity-file <path>                   Private key file path");
+    println!("    --agent                                  Use ssh-agent (SSH_AUTH_SOCK) auth");
+    println!("    --jump <name>                            Route via a configured jump host (ProxyJump)");
     println!("    --proxy-command <cmd>                    ProxyCommand (supports %h / %p)");
     println!("  hostshell-cli remove <name_or_id>          Remove a host");
     println!("  hostshell-cli connect <name_or_id>         Connect (interactive session)");
@@ -175,10 +177,14 @@ fn cmd_import(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::e
     }
     let content = std::fs::read_to_string(&args[2])?;
     let res = parse_ssh_config(&content);
-    println!("Imported {} host(s), {} warning(s):", res.hosts.len(), res.warnings.len());
+    println!("Imported {} host(s), {} jump host(s), {} warning(s):", res.hosts.len(), res.jump_hosts.len(), res.warnings.len());
     for h in &res.hosts {
         println!("  + {} (mode: {:?})", h.name, h.proxy_mode);
         store.save_host(h.clone())?;
+    }
+    for j in &res.jump_hosts {
+        println!("  + [jump] {} → {}:{} ({})", j.name, j.hostname, j.port, j.username);
+        store.save_jump_host(j.clone())?;
     }
     for w in &res.warnings {
         println!("  ! {}", w);
@@ -199,6 +205,8 @@ fn cmd_add(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::erro
     let mut identity_file: Option<String> = None;
     let mut password: Option<String> = None;
     let mut proxy_command: Option<String> = None;
+    let mut use_agent = false;
+    let mut jump_name: Option<String> = None;
 
     let mut i = 3;
     while i < args.len() {
@@ -208,6 +216,8 @@ fn cmd_add(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::erro
             "--port"          => { i += 1; if i < args.len() { port = args[i].parse().unwrap_or(22); } }
             "--identity-file" => { i += 1; if i < args.len() { identity_file = Some(args[i].clone()); } }
             "--password"      => { i += 1; if i < args.len() { password = Some(args[i].clone()); } }
+            "--agent"         => { use_agent = true; }
+            "--jump"          => { i += 1; if i < args.len() { jump_name = Some(args[i].clone()); } }
             "--proxy-command" => {
                 // Collect rest of the args as the command string
                 i += 1;
@@ -230,16 +240,27 @@ fn cmd_add(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::erro
         let key_data = std::fs::read_to_string(&expanded)
             .map_err(|e| format!("Cannot read identity file '{}': {}", expanded, e))?;
         AuthMethod::PrivateKey { key_data, passphrase: None }
+    } else if use_agent {
+        AuthMethod::Agent
     } else if let Some(pwd) = password {
         AuthMethod::Password(pwd)
     } else {
-        AuthMethod::Password(String::new())
+        AuthMethod::Agent
     };
 
-    let (proxy_mode, stored_cmd) = if let Some(ref cmd) = proxy_command {
-        (ProxyMode::ProxyCommand, Some(cmd.clone()))
+    let (proxy_mode, stored_cmd, jump_host_ids) = if let Some(ref cmd) = proxy_command {
+        (ProxyMode::ProxyCommand, Some(cmd.clone()), vec![])
+    } else if let Some(ref jn) = jump_name {
+        let jumps = store.load_jump_hosts()?;
+        match jumps.iter().find(|j| &j.name == jn) {
+            Some(j) => (ProxyMode::ProxyJump, None, vec![j.id.clone()]),
+            None => {
+                eprintln!("Error: jump host '{}' not found. Run 'list-jumps' to see available jump hosts.", jn);
+                return Ok(());
+            }
+        }
     } else {
-        (ProxyMode::Direct, None)
+        (ProxyMode::Direct, None, vec![])
     };
 
     let now = std::time::SystemTime::now()
@@ -255,7 +276,7 @@ fn cmd_add(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::erro
         username: username.clone(),
         auth,
         proxy_mode,
-        jump_host_ids: vec![],
+        jump_host_ids,
         cloudflare_config: None,
         proxy_command: stored_cmd,
         tags: vec![],

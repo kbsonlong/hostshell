@@ -90,7 +90,9 @@ impl ConfigStore {
 
     pub fn save_host(&self, host: Host) -> Result<()> {
         let mut hosts = self.load_hosts().unwrap_or_default();
-        hosts.retain(|h| h.id != host.id);
+        // Replace by id, and also by name (re-import / rename flows would
+        // otherwise append duplicate entries).
+        hosts.retain(|h| h.id != host.id && h.name != host.name);
         hosts.push(host);
         self.save_hosts(&hosts)
     }
@@ -127,7 +129,7 @@ impl ConfigStore {
 
     pub fn save_jump_host(&self, jh: JumpHost) -> Result<()> {
         let mut list = self.load_jump_hosts().unwrap_or_default();
-        list.retain(|j| j.id != jh.id);
+        list.retain(|j| j.id != jh.id && j.name != jh.name);
         list.push(jh);
         self.save_jump_hosts(&list)
     }

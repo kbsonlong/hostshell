@@ -134,9 +134,17 @@ pub async fn connect_bastion_chain(
                 handle.authenticate_publickey(&hop.username, key_with_alg).await
             }
             AuthMethod::Agent => {
-                return Err(HostShellError::Proxy(
-                    "SSH Agent forwarding is not permitted on jump host for security".to_string(),
-                ));
+                match crate::ssh::session::authenticate_with_agent(&mut handle, &hop.username)
+                    .await
+                {
+                    Ok(res) => Ok(res),
+                    Err(reason) => {
+                        return Err(HostShellError::AuthenticationFailed {
+                            user: hop.username.clone(),
+                            reason: format!("Jump host {}: {}", hop.name, reason),
+                        });
+                    }
+                }
             }
         };
 

@@ -1,4 +1,4 @@
-use crate::model::host::{AuthMethod, CloudflareAuthType, CloudflareConfig, Host, ProxyMode};
+use crate::model::host::{AuthMethod, CloudflareAuthType, CloudflareConfig, Host, JumpHost, ProxyMode};
 
 fn expand_tilde(path: &str) -> String {
     if path.starts_with('~') {
@@ -12,6 +12,7 @@ fn expand_tilde(path: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct ImportResult {
     pub hosts: Vec<Host>,
+    pub jump_hosts: Vec<JumpHost>,
     pub warnings: Vec<String>,
 }
 
@@ -53,14 +54,14 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
                     },
                     Err(e) => {
                         warnings.push(format!(
-                            "Host '{}': could not read IdentityFile '{}': {}. Falling back to password auth.",
+                            "Host '{}': could not read IdentityFile '{}': {}. Falling back to ssh-agent auth.",
                             name, expanded_path, e
                         ));
-                        AuthMethod::Password(String::new())
+                        AuthMethod::Agent
                     }
                 }
             } else {
-                AuthMethod::Password(String::new())
+                AuthMethod::Agent
             };
 
             let mut proxy_mode = ProxyMode::Direct;
@@ -197,5 +198,51 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
         );
     }
 
-    ImportResult { hosts, warnings }
+    // Post-process: ProxyJump hosts carry the raw ssh-config reference (e.g.
+    // "user@jump") in jump_host_ids. Resolve it against hosts from this batch,
+    // materialise a JumpHost asset per referenced name (dedup by name), and
+    // link the host to it by real UUID.
+    let mut jump_hosts: Vec<JumpHost> = Vec::new();
+    for idx in 0..hosts.len() {
+        if hosts[idx].proxy_mode != ProxyMode::ProxyJump {
+            continue;
+        }
+        let Some(raw_ref) = hosts[idx].jump_host_ids.first().cloned() else {
+            continue;
+        };
+        let ref_name = raw_ref.rsplit('@').next().unwrap_or(&raw_ref).to_string();
+        let target = hosts
+            .iter()
+            .find(|h| h.name == ref_name && h.proxy_mode != ProxyMode::ProxyJump)
+            .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone()));
+        match target {
+            Some((hostname, port, username, auth)) => {
+                let id = match jump_hosts.iter().find(|j| j.name == ref_name) {
+                    Some(j) => j.id.clone(),
+                    None => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        jump_hosts.push(JumpHost {
+                            id: id.clone(),
+                            name: ref_name.clone(),
+                            hostname,
+                            port,
+                            username,
+                            auth,
+                        });
+                        id
+                    }
+                };
+                hosts[idx].jump_host_ids = vec![id];
+            }
+            None => {
+                warnings.push(format!(
+                    "Host '{}': ProxyJump '{}' has no matching Host block in the imported config; left unlinked.",
+                    hosts[idx].name, raw_ref
+                ));
+                hosts[idx].jump_host_ids = Vec::new();
+            }
+        }
+    }
+
+    ImportResult { hosts, jump_hosts, warnings }
 }

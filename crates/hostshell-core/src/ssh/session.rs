@@ -34,6 +34,59 @@ pub enum SessionCommand {
     Close,
 }
 
+/// Authenticate `user` against `handle` using identities from ssh-agent (SSH_AUTH_SOCK).
+///
+/// Tries every loaded identity in turn; stops at the first success.
+/// Note: OpenSSH certificate identities held in the agent are offered as plain
+/// public keys (russh 0.65 has no dedicated agent-certificate auth path).
+pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
+    user: &str,
+) -> std::result::Result<russh::client::AuthResult, String> {
+    use russh::keys::agent::client::AgentClient;
+
+    let mut agent = AgentClient::connect_env().await.map_err(|e| {
+        format!("无法连接 ssh-agent（SSH_AUTH_SOCK 未设置或 socket 不可达）: {e}")
+    })?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| format!("读取 ssh-agent 密钥列表失败: {e}"))?;
+    if identities.is_empty() {
+        return Err("ssh-agent 中没有已加载的密钥（先运行 ssh-add <key>）".to_string());
+    }
+
+    let failure = russh::client::AuthResult::Failure {
+        remaining_methods: russh::MethodSet::empty(),
+        partial_success: false,
+    };
+    let mut last = failure;
+    for identity in &identities {
+        let key = identity.public_key().into_owned();
+        tracing::info!(
+            "Trying ssh-agent identity: {} ({})",
+            key.algorithm(),
+            identity.comment()
+        );
+        let hash_alg = if key.algorithm().is_rsa() {
+            match handle.best_supported_rsa_hash().await {
+                Ok(Some(Some(alg))) => Some(alg),
+                _ => Some(russh::keys::HashAlg::Sha256),
+            }
+        } else {
+            None
+        };
+        last = handle
+            .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+            .await
+            .map_err(|e| format!("ssh-agent 签名请求失败: {e}"))?;
+        if matches!(last, russh::client::AuthResult::Success) {
+            break;
+        }
+    }
+    Ok(last)
+}
+
 pub struct SessionHandle {
     pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub output_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -262,10 +315,21 @@ impl SshSession {
                 auth_res
             }
             AuthMethod::Agent => {
-                return Err(HostShellError::AuthenticationFailed {
-                    user: host.username.clone(),
-                    reason: "SSH Agent authentication is disabled for sandbox security".to_string(),
-                });
+                match authenticate_with_agent(&mut handle, &host.username).await {
+                    Ok(res) => Ok(res),
+                    Err(reason) => {
+                        let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                            failed_stage: "AuthenticatingUser".to_string(),
+                            error_category: "AuthError".to_string(),
+                            message: reason.clone(),
+                            suggestion: "启动 ssh-agent 并用 ssh-add 加载密钥后再试.".into(),
+                        }));
+                        return Err(HostShellError::AuthenticationFailed {
+                            user: host.username.clone(),
+                            reason,
+                        });
+                    }
+                }
             }
         };
 

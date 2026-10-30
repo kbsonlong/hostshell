@@ -11,6 +11,11 @@ Host direct-server
     Port 2222
     User admin
 
+Host jump01
+    HostName jump.corp.net
+    Port 2022
+    User jops
+
 Host bastion-server
     HostName bastion.internal.net
     User ops
@@ -27,7 +32,7 @@ Host unsupported-server
 "#;
 
     let res = parse_ssh_config(sample_config);
-    assert_eq!(res.hosts.len(), 4);
+    assert_eq!(res.hosts.len(), 5);
 
     // 1. Direct
     let direct = res.hosts.iter().find(|h| h.name == "direct-server").unwrap();
@@ -36,11 +41,17 @@ Host unsupported-server
     assert_eq!(direct.username, "admin");
     assert_eq!(direct.proxy_mode, ProxyMode::Direct);
 
-    // 2. ProxyJump
+    // 2. ProxyJump: raw ref resolved into a JumpHost asset linked by UUID
     let jump = res.hosts.iter().find(|h| h.name == "bastion-server").unwrap();
     assert_eq!(jump.hostname, "bastion.internal.net");
     assert_eq!(jump.proxy_mode, ProxyMode::ProxyJump);
-    assert_eq!(jump.jump_host_ids, vec!["jump01".to_string()]);
+    assert_eq!(res.jump_hosts.len(), 1);
+    let jh = &res.jump_hosts[0];
+    assert_eq!(jh.name, "jump01");
+    assert_eq!(jh.hostname, "jump.corp.net");
+    assert_eq!(jh.port, 2022);
+    assert_eq!(jh.username, "jops");
+    assert_eq!(jump.jump_host_ids, vec![jh.id.clone()]);
 
     // 3. cloudflared ProxyCommand → ProxyCommand mode (local process spawn)
     let cf = res.hosts.iter().find(|h| h.name == "cf-server").unwrap();
