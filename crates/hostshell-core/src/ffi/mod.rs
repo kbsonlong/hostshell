@@ -172,6 +172,7 @@ pub extern "C" fn hostshell_import_ssh_config(_engine: *mut EngineWrapper, confi
     let res = parse_ssh_config(str_slice);
     let json = serde_json::json!({
         "hosts": res.hosts,
+        "jump_hosts": res.jump_hosts,
         "warnings": res.warnings,
     });
     CString::new(json.to_string()).unwrap_or_default().into_raw()

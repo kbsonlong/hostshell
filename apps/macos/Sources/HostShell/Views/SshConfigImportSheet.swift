@@ -98,6 +98,9 @@ public struct SshConfigImportSheet: View {
                         for h in resp.hosts {
                             appVM.saveHost(h)
                         }
+                        for j in resp.jumpHosts ?? [] {
+                            appVM.saveJumpHost(j)
+                        }
                         dismiss()
                     }
                 }

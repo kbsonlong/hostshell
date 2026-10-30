@@ -220,5 +220,12 @@ public struct AnyCodable: Codable {
 
 public struct SshConfigImportResponse: Codable {
     public let hosts: [Host]
+    public let jumpHosts: [JumpHost]?
     public let warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case hosts
+        case jumpHosts = "jump_hosts"
+        case warnings
+    }
 }
