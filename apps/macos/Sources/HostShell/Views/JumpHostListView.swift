@@ -51,6 +51,19 @@ public struct JumpHostListView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
+                            if case .agent = jh.auth {
+                                Text("SSH Agent")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Button {
+                                appVM.connect(to: jh)
+                            } label: {
+                                Label("连接", systemImage: "terminal")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+
                             Button("编辑") {
                                 appVM.editJumpHost(jh)
                             }

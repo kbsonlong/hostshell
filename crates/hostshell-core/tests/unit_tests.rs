@@ -73,6 +73,46 @@ Host unsupported-server
 }
 
 #[test]
+fn test_cli_wire_auth_and_proxy_command_values() {
+    assert_eq!(serde_json::to_string(&AuthMethod::Agent).unwrap(), "\"agent\"");
+    assert_eq!(serde_json::to_string(&ProxyMode::ProxyCommand).unwrap(), "\"proxy_command\"");
+}
+
+#[test]
+fn test_import_resolves_proxyjump_and_skips_wildcard_host() {
+    let config = r#"
+Host *
+    User fallback
+
+Host jump
+    HostName jump.example.test
+    Port 32200
+    User engineer
+
+Host 10.*
+    Port 32200
+    User engineer
+    ProxyJump engineer@jump
+"#;
+    let result = parse_ssh_config(config);
+    assert_eq!(result.hosts.len(), 2);
+    assert_eq!(result.jump_hosts.len(), 1);
+    assert_eq!(result.jump_hosts[0].name, "jump");
+    let target = result.hosts.iter().find(|h| h.name == "10.*").unwrap();
+    assert_eq!(target.proxy_mode, ProxyMode::ProxyJump);
+    assert_eq!(target.jump_host_ids, vec![result.jump_hosts[0].id.clone()]);
+}
+
+#[test]
+fn test_import_proxyjump_missing_target_is_warning_and_not_dangling() {
+    let result = parse_ssh_config("Host private\n  HostName 10.1.2.3\n  ProxyJump missing\n");
+    assert_eq!(result.hosts.len(), 1);
+    assert!(result.jump_hosts.is_empty());
+    assert!(result.hosts[0].jump_host_ids.is_empty());
+    assert_eq!(result.warnings.len(), 1);
+}
+
+#[test]
 fn test_known_hosts_store() {
     let mut store = KnownHostsStore::new();
     let entry = KnownHostEntry {
@@ -154,6 +194,10 @@ fn test_config_store_crud() {
     let loaded = store.load_hosts().unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].name, "Test Host");
+    let mut same_name = host.clone();
+    same_name.id = "host-1-reimport".to_string();
+    store.save_host(same_name).unwrap();
+    assert_eq!(store.load_hosts().unwrap().len(), 1);
 
     let jh = JumpHost {
         id: "jump-1".to_string(),
@@ -168,8 +212,8 @@ fn test_config_store_crud() {
     assert_eq!(loaded_jh.len(), 1);
     assert_eq!(loaded_jh[0].hostname, "jump.test");
 
-    // Delete
-    assert!(store.delete_host("host-1").unwrap());
+    // Delete the latest re-imported record (same name, refreshed ID).
+    assert!(store.delete_host("host-1-reimport").unwrap());
     assert_eq!(store.load_hosts().unwrap().len(), 0);
 
     // Clean up

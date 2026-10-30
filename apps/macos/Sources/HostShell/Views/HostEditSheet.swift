@@ -51,7 +51,7 @@ public struct HostEditSheet: View {
                 pk = keyData
                 pass = passphrase ?? ""
             case .agent:
-                authC = 0
+                authC = 2
             }
         }
         _authChoice = State(initialValue: authC)
@@ -115,13 +115,14 @@ public struct HostEditSheet: View {
                             Picker("凭证类型", selection: $authChoice) {
                                 Text("密码认证").tag(0)
                                 Text("SSH 私钥").tag(1)
+                                Text("SSH Agent").tag(2)
                             }
                             .pickerStyle(.segmented)
 
                             if authChoice == 0 {
                                 SecureField("登录密码", text: $passwordText)
                                     .textFieldStyle(.roundedBorder)
-                            } else {
+                            } else if authChoice == 1 {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("OpenSSH 私钥内容 (Ed25519 / RSA):")
                                         .font(.caption)
@@ -310,13 +311,16 @@ public struct HostEditSheet: View {
         }
 
         let auth: AuthMethod
-        if authChoice == 0 {
+        switch authChoice {
+        case 0:
             auth = .password(passwordText)
-        } else {
+        case 1:
             auth = .privateKey(
                 keyData: privateKeyText,
                 passphrase: passphraseText.isEmpty ? nil : passphraseText
             )
+        default:
+            auth = .agent
         }
 
         let cfConfig: CloudflareConfig?

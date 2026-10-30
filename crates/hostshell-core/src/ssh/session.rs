@@ -123,7 +123,11 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     }
 
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
-    let mut empty_live: Option<AgentClient<tokio::net::UnixStream>> = None;
+    let mut agents: Vec<(
+        String,
+        AgentClient<tokio::net::UnixStream>,
+        Vec<russh::keys::agent::AgentIdentity>,
+    )> = Vec::new();
     let mut last_detail = String::new();
 
     for sock in &candidates {
@@ -133,20 +137,16 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
             Ok::<_, russh::keys::Error>((agent, identities))
         };
         match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
-            Ok(Ok((mut agent, identities))) => {
-                if identities.is_empty() {
-                    if empty_live.is_none() {
-                        last_detail = format!("{}: agent 可用但没有已加载的密钥", sock.display());
-                        empty_live = Some(agent);
-                    }
-                    continue;
-                }
+            Ok(Ok((agent, identities))) if !identities.is_empty() => {
                 tracing::info!(
-                    "Using ssh-agent socket {} ({} identities)",
+                    "Found ssh-agent socket {} ({} identities)",
                     sock.display(),
                     identities.len()
                 );
-                return try_agent_identities(&mut agent, &identities, handle, user).await;
+                agents.push((sock.display().to_string(), agent, identities));
+            }
+            Ok(Ok((_agent, _))) => {
+                last_detail = format!("{}: agent 可用但没有已加载的密钥", sock.display());
             }
             Ok(Err(e)) => {
                 tracing::debug!("agent socket {} unusable: {e}", sock.display());
@@ -159,16 +159,29 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
         }
     }
 
-    if let Some(mut agent) = empty_live {
-        let identities = agent
-            .request_identities()
-            .await
-            .map_err(|e| format!("读取 ssh-agent 密钥列表失败: {e}"))?;
-        return try_agent_identities(&mut agent, &identities, handle, user).await;
+    if agents.is_empty() {
+        return Err(format!(
+            "没有可用的 ssh-agent 密钥（最后探测: {last_detail}）。请先 ssh-add <key>"
+        ));
     }
-    Err(format!(
-        "没有可用的 ssh-agent 密钥（最后探测: {last_detail}）。请先 ssh-add <key>"
-    ))
+
+    let mut last_result = russh::client::AuthResult::Failure {
+        remaining_methods: russh::MethodSet::empty(),
+        partial_success: false,
+    };
+    let mut attempted = 0usize;
+    for (socket, agent, identities) in &mut agents {
+        let result = try_agent_identities(agent, identities, handle, user).await?;
+        attempted += identities.len();
+        if matches!(result, russh::client::AuthResult::Success) {
+            tracing::info!("SSH agent authentication succeeded using {socket}");
+            return Ok(result);
+        }
+        last_result = result;
+    }
+
+    tracing::warn!("All {attempted} ssh-agent identities across {} sockets were rejected", agents.len());
+    Ok(last_result)
 }
 
 /// iOS is sandboxed and does not expose Unix-domain ssh-agent sockets.

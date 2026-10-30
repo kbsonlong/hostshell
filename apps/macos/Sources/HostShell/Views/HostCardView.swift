@@ -101,6 +101,14 @@ public struct HostCardView: View {
                 .background(Color.blue.opacity(0.12))
                 .foregroundColor(.blue)
                 .cornerRadius(4)
+        case .proxyCommand:
+            Label("ProxyCommand", systemImage: "terminal")
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.12))
+                .foregroundColor(.orange)
+                .cornerRadius(4)
         case .cloudflareAccess:
             Label("Cloudflare", systemImage: "shield.checkerboard")
                 .font(.system(size: 10, weight: .semibold))

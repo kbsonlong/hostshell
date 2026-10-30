@@ -160,7 +160,7 @@ public struct SshConfigImportSheet: View {
         }
         guard let response = HostShellBridge.shared.importSshConfig(text: configText) else {
             previewResponse = nil
-            errorMessage = "配置解析失败，请确认文件是 UTF-8 编码的 OpenSSH config。"
+            errorMessage = "配置解析结果无法读取。请查看 Console 中的 HostShellBridge 解码错误详情。"
             return
         }
         previewResponse = response

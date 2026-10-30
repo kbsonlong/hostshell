@@ -170,7 +170,12 @@ public final class HostShellBridge: @unchecked Sendable {
         defer { c_hostshell_free_string(cStr) }
         let jsonStr = String(cString: cStr)
         guard let data = jsonStr.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(SshConfigImportResponse.self, from: data)
+        do {
+            return try JSONDecoder().decode(SshConfigImportResponse.self, from: data)
+        } catch {
+            NSLog("[HostShellBridge] SSH config import response decode failed: %@", String(describing: error))
+            return nil
+        }
     }
 
     public func connect(

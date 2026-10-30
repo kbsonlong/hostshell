@@ -106,6 +106,27 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    public func connect(to jumpHost: JumpHost) {
+        let now = UInt64(Date().timeIntervalSince1970)
+        let host = Host(
+            id: jumpHost.id,
+            name: jumpHost.name,
+            hostname: jumpHost.hostname,
+            port: jumpHost.port,
+            username: jumpHost.username,
+            auth: jumpHost.auth,
+            proxy_mode: .direct,
+            tags: ["jump-host"],
+            created_at: now,
+            updated_at: now
+        )
+        let session = SessionViewModel(host: host)
+        activeJumpSessionVM = session
+        session.connect()
+    }
+
+    @Published public var activeJumpSessionVM: SessionViewModel? = nil
+
     public func connect(to host: Host) {
         activeSessionHost = host
     }

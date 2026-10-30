@@ -4,6 +4,7 @@ public enum ProxyMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case direct = "direct"
     case proxyJump = "proxy_jump"
     case cloudflareAccess = "cloudflare_access"
+    case proxyCommand = "proxy_command"
 
     public var id: String { rawValue }
 
@@ -12,6 +13,7 @@ public enum ProxyMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .direct: return "直连 (Direct)"
         case .proxyJump: return "跳板机 (ProxyJump)"
         case .cloudflareAccess: return "零信任 (Cloudflare Access)"
+        case .proxyCommand: return "代理命令 (ProxyCommand)"
         }
     }
 
@@ -20,6 +22,7 @@ public enum ProxyMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .direct: return "直连"
         case .proxyJump: return "ProxyJump"
         case .cloudflareAccess: return "Cloudflare"
+        case .proxyCommand: return "ProxyCommand"
         }
     }
 }
@@ -77,13 +80,21 @@ public enum AuthMethod: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(),
+           let value = try? single.decode(String.self),
+           value == "agent" {
+            self = .agent
+            return
+        }
         let container = try decoder.container(keyedBy: CodingKeys.self)
         if let pwd = try? container.decode(String.self, forKey: .password) {
             self = .password(pwd)
         } else if let pk = try? container.decode(PrivateKeyPayload.self, forKey: .private_key) {
             self = .privateKey(keyData: pk.key_data, passphrase: pk.passphrase)
-        } else {
+        } else if (try? container.decodeNil(forKey: .agent)) == true {
             self = .agent
+        } else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown SSH auth method"))
         }
     }
 

@@ -3,6 +3,7 @@ import SwiftUI
 public struct MainView: View {
     @StateObject private var appVM = AppViewModel()
     @State private var activeSessionVM: SessionViewModel? = nil
+    @State private var activeJumpSessionVM: SessionViewModel? = nil
 
     public var body: some View {
         NavigationSplitView {
@@ -33,6 +34,25 @@ public struct MainView: View {
             } else {
                 activeSessionVM?.disconnect()
                 activeSessionVM = nil
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { appVM.activeJumpSessionVM != nil },
+            set: { if !$0 { appVM.activeJumpSessionVM = nil } }
+        )) {
+            if let vm = appVM.activeJumpSessionVM {
+                Group {
+                    if vm.isConnected {
+                        TerminalView(sessionVM: vm) {
+                            appVM.activeJumpSessionVM = nil
+                        }
+                        .frame(minWidth: 700, minHeight: 460)
+                    } else {
+                        ConnectionStageView(sessionVM: vm) {
+                            appVM.activeJumpSessionVM = nil
+                        }
+                    }
+                }
             }
         }
         .sheet(item: $appVM.activeSessionHost) { host in
