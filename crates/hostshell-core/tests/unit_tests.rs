@@ -1,0 +1,166 @@
+use hostshell_core::model::host::{AuthMethod, CloudflareAuthType, Host, JumpHost, ProxyMode};
+use hostshell_core::model::known_host::{KnownHostEntry, KnownHostsStore};
+use hostshell_core::model::stage::{ConnectionStage, StageEvent};
+use hostshell_core::storage::{parse_ssh_config, ConfigStore};
+
+#[test]
+fn test_parse_ssh_config_subset() {
+    let sample_config = r#"
+Host direct-server
+    HostName 192.168.1.10
+    Port 2222
+    User admin
+
+Host bastion-server
+    HostName bastion.internal.net
+    User ops
+    ProxyJump jump01
+
+Host cf-server
+    HostName prod.internal.corp
+    User dev
+    ProxyCommand cloudflared access ssh --hostname %h
+
+Host unsupported-server
+    HostName legacy.box
+    ProxyCommand nc -X 5 -x 127.0.0.1:1080 %h %p
+"#;
+
+    let res = parse_ssh_config(sample_config);
+    assert_eq!(res.hosts.len(), 4);
+
+    // 1. Direct
+    let direct = res.hosts.iter().find(|h| h.name == "direct-server").unwrap();
+    assert_eq!(direct.hostname, "192.168.1.10");
+    assert_eq!(direct.port, 2222);
+    assert_eq!(direct.username, "admin");
+    assert_eq!(direct.proxy_mode, ProxyMode::Direct);
+
+    // 2. ProxyJump
+    let jump = res.hosts.iter().find(|h| h.name == "bastion-server").unwrap();
+    assert_eq!(jump.hostname, "bastion.internal.net");
+    assert_eq!(jump.proxy_mode, ProxyMode::ProxyJump);
+    assert_eq!(jump.jump_host_ids, vec!["jump01".to_string()]);
+
+    // 3. cloudflared ProxyCommand → ProxyCommand mode (local process spawn)
+    let cf = res.hosts.iter().find(|h| h.name == "cf-server").unwrap();
+    assert_eq!(cf.proxy_mode, ProxyMode::ProxyCommand);
+    assert!(cf.proxy_command.is_some());
+    assert!(cf.proxy_command.as_ref().unwrap().contains("cloudflared"));
+    // CloudflareConfig stub is still populated for future Service Token binding
+    assert!(cf.cloudflare_config.is_some());
+    assert_eq!(
+        cf.cloudflare_config.as_ref().unwrap().auth_type,
+        CloudflareAuthType::ServiceToken
+    );
+
+    // 4. Generic unsupported ProxyCommand → also ProxyCommand mode now (no warning)
+    let unsupported = res.hosts.iter().find(|h| h.name == "unsupported-server").unwrap();
+    assert_eq!(unsupported.proxy_mode, ProxyMode::ProxyCommand);
+    assert!(unsupported.proxy_command.is_some());
+    assert_eq!(res.warnings.len(), 0);
+}
+
+#[test]
+fn test_known_hosts_store() {
+    let mut store = KnownHostsStore::new();
+    let entry = KnownHostEntry {
+        hostname: "example.com".to_string(),
+        port: 22,
+        key_type: "ssh-ed25519".to_string(),
+        fingerprint: "SHA256:abc123xyz".to_string(),
+        raw_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...".to_string(),
+        added_at: 1000,
+    };
+
+    store.add(entry.clone());
+    assert!(store.find("example.com", 22).is_some());
+    assert_eq!(
+        store.find("example.com", 22).unwrap().fingerprint,
+        "SHA256:abc123xyz"
+    );
+
+    // Update with new fingerprint
+    let mut updated = entry.clone();
+    updated.fingerprint = "SHA256:newfingerprint".to_string();
+    store.add(updated);
+    assert_eq!(store.entries.len(), 1);
+    assert_eq!(
+        store.find("example.com", 22).unwrap().fingerprint,
+        "SHA256:newfingerprint"
+    );
+
+    // Remove
+    assert!(store.remove("example.com", 22));
+    assert!(store.find("example.com", 22).is_none());
+}
+
+#[test]
+fn test_stage_event_serialization() {
+    let event = StageEvent::now(ConnectionStage::BastionConnecting {
+        hop: 1,
+        total_hops: 2,
+        bastion_name: "bastion-gw".to_string(),
+    });
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("bastion_connecting"));
+    assert!(json.contains("bastion-gw"));
+
+    let failed_evt = StageEvent::now(ConnectionStage::Failed {
+        failed_stage: "CloudflareHandshake".to_string(),
+        error_category: "CloudflareAuthFailed".to_string(),
+        message: "Token rejected".to_string(),
+        suggestion: "Please check credentials".to_string(),
+    });
+    let failed_json = serde_json::to_string(&failed_evt).unwrap();
+    assert!(failed_json.contains("CloudflareAuthFailed"));
+}
+
+#[test]
+fn test_config_store_crud() {
+    let tmp_dir = std::env::temp_dir().join(format!("hostshell_test_{}", uuid::Uuid::new_v4()));
+    let store = ConfigStore::with_dir(tmp_dir.clone()).unwrap();
+
+    let host = Host {
+        id: "host-1".to_string(),
+        name: "Test Host".to_string(),
+        hostname: "127.0.0.1".to_string(),
+        port: 22,
+        username: "tester".to_string(),
+        auth: AuthMethod::Password("secret".to_string()),
+        proxy_mode: ProxyMode::Direct,
+        jump_host_ids: vec![],
+        cloudflare_config: None,
+        proxy_command: None,
+        tags: vec!["prod".to_string()],
+        last_connected_at: None,
+        created_at: 100,
+        updated_at: 100,
+    };
+
+    store.save_host(host.clone()).unwrap();
+    let loaded = store.load_hosts().unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].name, "Test Host");
+
+    let jh = JumpHost {
+        id: "jump-1".to_string(),
+        name: "Jump 1".to_string(),
+        hostname: "jump.test".to_string(),
+        port: 2222,
+        username: "jumpuser".to_string(),
+        auth: AuthMethod::Password("jumppwd".to_string()),
+    };
+    store.save_jump_host(jh).unwrap();
+    let loaded_jh = store.load_jump_hosts().unwrap();
+    assert_eq!(loaded_jh.len(), 1);
+    assert_eq!(loaded_jh[0].hostname, "jump.test");
+
+    // Delete
+    assert!(store.delete_host("host-1").unwrap());
+    assert_eq!(store.load_hosts().unwrap().len(), 0);
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}
