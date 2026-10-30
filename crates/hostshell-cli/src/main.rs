@@ -470,7 +470,14 @@ async fn run_interactive_session(
                     break;
                 }
             }
-            None => break,
+            None => {
+                // stdin closed (pipe/script mode): keep the session alive and
+                // wait for the remote side to close, so output is not lost.
+                while !done.load(Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                break;
+            }
         }
     }
 
