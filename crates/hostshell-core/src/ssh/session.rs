@@ -14,7 +14,7 @@ use crate::transport::{connect_bastion_chain, connect_cloudflare, connect_direct
 ///
 /// `russh` parses PKCS#1 RSA, PKCS#8, and OpenSSH keys itself. Stored keys
 /// may contain Windows newlines, which break the PEM header match.
-fn load_private_key(
+pub(crate) fn load_private_key(
     key_data: &str,
     passphrase: Option<&str>,
     user: &str,
@@ -26,6 +26,34 @@ fn load_private_key(
             reason: format!("Failed to parse private key: {}", e),
         }
     })
+}
+
+pub(crate) async fn authenticate_with_private_key<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
+    user: &str,
+    key: russh::keys::PrivateKey,
+) -> std::result::Result<russh::client::AuthResult, russh::Error> {
+    let key = Arc::new(key);
+    let hash_algs: Vec<Option<russh::keys::HashAlg>> = if key.algorithm().is_rsa() {
+        match handle.best_supported_rsa_hash().await {
+            Ok(Some(Some(alg))) => vec![Some(alg)],
+            _ => vec![Some(russh::keys::HashAlg::Sha256), Some(russh::keys::HashAlg::Sha512)],
+        }
+    } else {
+        vec![None]
+    };
+    let mut result = Ok(russh::client::AuthResult::Failure {
+        remaining_methods: russh::MethodSet::empty(),
+        partial_success: false,
+    });
+    for hash_alg in hash_algs {
+        let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(Arc::clone(&key), hash_alg);
+        result = handle.authenticate_publickey(user, key_with_alg).await;
+        if matches!(result, Ok(russh::client::AuthResult::Success) | Err(_)) {
+            break;
+        }
+    }
+    result
 }
 
 pub enum SessionCommand {
@@ -560,37 +588,7 @@ impl SshSession {
             AuthMethod::Password(pwd) => handle.authenticate_password(&host.username, pwd).await,
             AuthMethod::PrivateKey { key_data, passphrase } => {
                 let decoded = load_private_key(key_data, passphrase.as_deref(), &host.username)?;
-                let key = Arc::new(decoded);
-                // None selects legacy ssh-rsa (SHA-1), which current servers reject.
-                let hash_algs: Vec<Option<russh::keys::HashAlg>> = if key.algorithm().is_rsa() {
-                    match handle.best_supported_rsa_hash().await {
-                        Ok(Some(alg)) => vec![alg],
-                        _ => vec![
-                            Some(russh::keys::HashAlg::Sha256),
-                            Some(russh::keys::HashAlg::Sha512),
-                        ],
-                    }
-                } else {
-                    vec![None]
-                };
-
-                let mut auth_res = Ok(russh::client::AuthResult::Failure {
-                    remaining_methods: russh::MethodSet::empty(),
-                    partial_success: false,
-                });
-                for hash_alg in hash_algs {
-                    let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-                        Arc::clone(&key),
-                        hash_alg,
-                    );
-                    auth_res = handle
-                        .authenticate_publickey(&host.username, key_with_alg)
-                        .await;
-                    if matches!(auth_res, Ok(russh::client::AuthResult::Success)) {
-                        break;
-                    }
-                }
-                auth_res
+                authenticate_with_private_key(&mut handle, &host.username, decoded).await
             }
             AuthMethod::Agent => {
                 match authenticate_with_agent(&mut handle, &host.username).await {

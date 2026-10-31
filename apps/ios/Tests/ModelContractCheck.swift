@@ -56,6 +56,14 @@ enum IOSModelContractCheck {
         let encoded = try JSONEncoder().encode(response.hosts)
         let decodedAgain = try JSONDecoder().decode([Host].self, from: encoded)
         precondition(decodedAgain == response.hosts)
+        var savedKeyHost = response.hosts[0]
+        savedKeyHost.auth = .keyRef(id: "key-1")
+        let savedKeyHostData = try JSONEncoder().encode(savedKeyHost)
+        let restoredHost = try JSONDecoder().decode(Host.self, from: savedKeyHostData)
+        precondition(restoredHost.auth == .keyRef(id: "key-1"))
+        let keyData = Data(#"[{"id":"key-1","name":"work","fingerprint":"SHA256:example","algorithm":"ssh-ed25519"}]"#.utf8)
+        let keys = try JSONDecoder().decode([SSHKeyMetadata].self, from: keyData)
+        precondition(keys.count == 1 && keys[0].id == "key-1" && keys[0].name == "work")
         print("iOS wire model: auth + proxy_command + jump_hosts decode/encode OK")
     }
 }

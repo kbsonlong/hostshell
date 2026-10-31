@@ -2,3 +2,7 @@
 /apps/macos/.build
 .DS_Store
 apps/ios/.build
+
+# Xcode user state
+*.xcuserstate
+xcuserdata/

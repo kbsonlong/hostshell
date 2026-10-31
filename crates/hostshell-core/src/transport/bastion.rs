@@ -16,6 +16,75 @@ use crate::transport::stream::BoxedStream;
 #[derive(Clone)]
 pub struct BastionClientHandler;
 
+fn decode_jump_private_key(
+    key_data: &str,
+    passphrase: Option<&str>,
+    hop: &JumpHost,
+) -> Result<russh::keys::PrivateKey> {
+    crate::ssh::session::load_private_key(key_data, passphrase, &hop.username).map_err(|e| {
+        HostShellError::Proxy(format!(
+            "Failed to decode private key for jump host {}: {}",
+            hop.name, e
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Sha2OnlyServer;
+
+    impl russh::server::Handler for Sha2OnlyServer {
+        type Error = russh::Error;
+
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            key: russh::server::VerifiedPublicKey<'_>,
+        ) -> std::result::Result<russh::server::Auth, Self::Error> {
+            if user == "test-user" && key.algorithm.to_string().starts_with("rsa-sha2-") {
+                Ok(russh::server::Auth::Accept)
+            } else {
+                Ok(russh::server::Auth::reject())
+            }
+        }
+    }
+
+    #[test]
+    fn jump_accepts_pem_rsa_key_with_windows_line_endings() {
+        let hop = JumpHost {
+            id: "test".into(), name: "test-jump".into(), hostname: "localhost".into(),
+            port: 22, username: "test-user".into(), auth: AuthMethod::Agent,
+        };
+        let pem = include_str!("../../tests/fixtures/jump-test-rsa.pem").replace('\n', "\r\n");
+        assert!(decode_jump_private_key(&pem, None, &hop).is_ok());
+        let error = decode_jump_private_key("invalid key", None, &hop).unwrap_err().to_string();
+        assert!(error.contains("test-jump"));
+    }
+
+    #[tokio::test]
+    async fn jump_rsa_authenticates_with_sha2_signature() {
+        let pem = include_str!("../../tests/fixtures/jump-test-rsa.pem");
+        let key = russh::keys::decode_secret_key(pem, None).unwrap();
+        let mut config = russh::server::Config::default();
+        config.keys.push(key.clone());
+        config.auth_rejection_time = Duration::ZERO;
+        let (client_stream, server_stream) = tokio::io::duplex(65536);
+        let server = tokio::spawn(async move {
+            if let Ok(session) = russh::server::run_stream(Arc::new(config), server_stream, Sha2OnlyServer).await {
+                let _ = session.await;
+            }
+        });
+        let mut client = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()), client_stream, BastionClientHandler,
+        ).await.unwrap();
+        let result = crate::ssh::session::authenticate_with_private_key(&mut client, "test-user", key).await.unwrap();
+        assert!(matches!(result, russh::client::AuthResult::Success));
+        server.abort();
+    }
+}
+
 impl russh::client::Handler for BastionClientHandler {
     type Error = russh::Error;
 
@@ -117,21 +186,8 @@ pub async fn connect_bastion_chain(
                 handle.authenticate_password(&hop.username, pwd).await
             }
             AuthMethod::PrivateKey { key_data, passphrase } => {
-                let decoded = russh::keys::decode_openssh(
-                    key_data.as_bytes(),
-                    passphrase.as_deref(),
-                )
-                .map_err(|e| {
-                    HostShellError::Proxy(format!(
-                        "Failed to decode private key for jump host {}: {}",
-                        hop.name, e
-                    ))
-                })?;
-                let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-                    Arc::new(decoded),
-                    None,
-                );
-                handle.authenticate_publickey(&hop.username, key_with_alg).await
+                let decoded = decode_jump_private_key(key_data, passphrase.as_deref(), hop)?;
+                crate::ssh::session::authenticate_with_private_key(&mut handle, &hop.username, decoded).await
             }
             AuthMethod::Agent => {
                 match crate::ssh::session::authenticate_with_agent(&mut handle, &hop.username)

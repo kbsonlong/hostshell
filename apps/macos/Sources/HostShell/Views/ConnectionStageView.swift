@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 public struct ConnectionStageView: View {
     @ObservedObject var sessionVM: SessionViewModel
@@ -39,8 +40,8 @@ public struct ConnectionStageView: View {
 
             Divider()
 
-            // Stages list
-            VStack(alignment: .leading, spacing: 14) {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 14) {
                 ForEach(sessionVM.stages) { item in
                     HStack(spacing: 12) {
                         if item.isFailed {
@@ -64,12 +65,13 @@ public struct ConnectionStageView: View {
                         Text(item.description)
                             .font(.system(size: 13, design: .monospaced))
                             .foregroundColor(item.isFailed ? .red : (item.isCurrent ? .primary : .secondary))
+                            .textSelection(.enabled)
 
                         Spacer()
                     }
                 }
-            }
-            .padding(.horizontal, 24)
+              }
+              .padding(.horizontal, 24)
 
             // Failure Diagnostics Callout (PRD FR-32)
             if let failure = sessionVM.failureInfo {
@@ -90,6 +92,7 @@ public struct ConnectionStageView: View {
                     Text("错误详情: \(failure.message)")
                         .font(.caption)
                         .foregroundColor(.primary)
+                        .textSelection(.enabled)
 
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "lightbulb.fill")
@@ -98,6 +101,7 @@ public struct ConnectionStageView: View {
                         Text("排错建议: \(failure.suggestion)")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
                 .padding(12)
@@ -109,8 +113,8 @@ public struct ConnectionStageView: View {
                 )
                 .padding(.horizontal, 20)
             }
-
-            Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
@@ -119,6 +123,13 @@ public struct ConnectionStageView: View {
                 Button("取消") {
                     sessionVM.disconnect()
                     onCancel()
+                }
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(diagnostics, forType: .string)
+                } label: {
+                    Label("复制连接详情", systemImage: "doc.on.doc")
                 }
 
                 Spacer()
@@ -133,5 +144,19 @@ public struct ConnectionStageView: View {
             .padding()
         }
         .frame(width: 520, height: 460)
+    }
+
+    private var diagnostics: String {
+        var lines = ["主机: \(sessionVM.host.name) (\(sessionVM.host.username)@\(sessionVM.host.hostname):\(sessionVM.host.port))",
+                     "连接方式: \(sessionVM.host.proxy_mode.displayName)"]
+        lines += sessionVM.stages.map(\.description)
+        if let failure = sessionVM.failureInfo {
+            lines += ["故障阶段: \(failure.stage)", "错误分类: \(failure.category)",
+                      "错误详情: \(failure.message)", "排错建议: \(failure.suggestion)"]
+        }
+        if sessionVM.isDisconnected && !sessionVM.disconnectReason.isEmpty {
+            lines.append("断开原因: \(sessionVM.disconnectReason)")
+        }
+        return lines.joined(separator: "\n")
     }
 }
