@@ -1,6 +1,7 @@
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::time::timeout;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async_tls_with_config, Connector};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
@@ -62,7 +63,18 @@ pub async fn connect_cloudflare(
         }
     }
 
-    let (ws_stream, response) = timeout(timeout_duration, connect_async(request))
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| HostShellError::Cloudflare(format!("TLS configuration failed: {}", e)))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+
+    let (ws_stream, response) = timeout(timeout_duration, connect_async_tls_with_config(
+        request, None, false, Some(Connector::Rustls(Arc::new(tls_config))),
+    ))
         .await
         .map_err(|_| HostShellError::Cloudflare("Cloudflare Access WSS handshake timed out".to_string()))?
         .map_err(|e| HostShellError::Cloudflare(format!("Cloudflare Access WSS connection failed: {}", e)))?;
@@ -74,4 +86,29 @@ pub async fn connect_cloudflare(
 
     let adapter = WsStreamAdapter::new(ws_stream);
     Ok(Box::pin(adapter) as BoxedStream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn tls_failure_returns_error_instead_of_panicking() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let config = CloudflareConfig {
+            auth_type: CloudflareAuthType::ServiceToken,
+            client_id: Some("test-id".into()),
+            client_secret: Some("test-secret".into()),
+            cookie: None,
+            hostname_override: Some(address.to_string()),
+        };
+        let result = connect_cloudflare("unused", &config, Duration::from_secs(5)).await;
+        assert!(matches!(result, Err(HostShellError::Cloudflare(_))));
+        server.await.unwrap();
+    }
 }
