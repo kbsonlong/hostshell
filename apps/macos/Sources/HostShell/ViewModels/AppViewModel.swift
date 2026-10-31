@@ -36,8 +36,7 @@ public final class AppViewModel: ObservableObject {
 
     @Published public var isShowingImportSheet: Bool = false
 
-    // Active session modal
-    @Published public var activeSessionHost: Host? = nil
+    private let sessionWindows = SessionWindowManager.shared
 
     private let bridge = HostShellBridge.shared
 
@@ -136,10 +135,10 @@ public final class AppViewModel: ObservableObject {
             created_at: now,
             updated_at: now
         )
-        activeSessionHost = host
+        sessionWindows.open(host: host)
     }
 
     public func connect(to host: Host) {
-        activeSessionHost = host
+        sessionWindows.open(host: host)
     }
 }

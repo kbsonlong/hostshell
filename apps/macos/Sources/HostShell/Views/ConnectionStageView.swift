@@ -143,7 +143,7 @@ public struct ConnectionStageView: View {
             }
             .padding()
         }
-        .frame(width: 520, height: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var diagnostics: String {

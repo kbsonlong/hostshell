@@ -28,6 +28,8 @@ public final class SessionViewModel: ObservableObject {
     public let host: Host
     private let bridge = HostShellBridge.shared
     private var sessionBridge: SessionHandleBridge?
+    private var connectionID = UUID()
+    private var terminalSize: (cols: UInt32, rows: UInt32)?
 
     @Published public var isConnecting: Bool = false
     @Published public var isConnected: Bool = false
@@ -62,12 +64,13 @@ public final class SessionViewModel: ObservableObject {
         isDisconnected = false
         failureInfo = nil
         stages.removeAll()
+        pendingOutput.removeAll()
+        let attemptID = connectionID
 
         let targetHost = self.host
         let coreBridge = self.bridge
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
             let sess = coreBridge.connect(
                 host: targetHost,
                 cols: 80,
@@ -75,19 +78,26 @@ public final class SessionViewModel: ObservableObject {
                 autoAcceptNewKeys: true,
                 onStage: { [weak self] stageJson in
                     DispatchQueue.main.async {
-                        self?.handleStageJson(stageJson)
+                        guard let self, self.connectionID == attemptID else { return }
+                        self.handleStageJson(stageJson)
                     }
                 },
                 onOutput: { [weak self] data in
                     DispatchQueue.main.async {
-                        self?.handleRawOutput(data)
+                        guard let self, self.connectionID == attemptID else { return }
+                        self.handleRawOutput(data)
                     }
                 }
             )
 
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self, self.connectionID == attemptID else {
+                    sess?.close()
+                    return
+                }
                 if let sess = sess {
                     self.sessionBridge = sess
+                    if let size = self.terminalSize { sess.resize(cols: size.cols, rows: size.rows) }
                 } else if self.failureInfo == nil {
                     self.isConnecting = false
                     self.failureInfo = FailureInfo(
@@ -137,10 +147,12 @@ public final class SessionViewModel: ObservableObject {
     }
 
     public func resize(cols: UInt32, rows: UInt32) {
+        terminalSize = (cols, rows)
         sessionBridge?.resize(cols: cols, rows: rows)
     }
 
     public func disconnect() {
+        connectionID = UUID()
         sessionBridge?.close()
         sessionBridge = nil
         isConnecting = false
