@@ -272,9 +272,8 @@ struct HostEditor: View {
     @State private var selectedJumpID = ""
     @State private var forwardAgent = false
     @State private var forwardKeyIds: [String] = []
-    @State private var forwardCertificateId = ""
+    @State private var forwardCertificateIds: [String] = []
     @State private var originalJumpID = ""
-    @State private var originalForwardCertificateId = ""
     @State private var saveError: String?
 
     var body: some View {
@@ -339,13 +338,23 @@ struct HostEditor: View {
                 Section("SSH Agent 转发") {
                     Toggle("转发应用内 SSH Agent", isOn: $forwardAgent)
                     if forwardAgent {
-                        Picker("转发证书", selection: $forwardCertificateId) {
-                            Text("选择证书").tag("")
-                            ForEach(model.keys) { Text($0.name).tag($0.id) }
+                        Text("选择允许转发的证书（可多选）")
+                            .font(.subheadline)
+                        if model.keys.isEmpty {
+                            Text("暂无已保存证书。请先在证书管理中导入私钥，或选择下方主机私钥。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        ForEach(model.keys) { item in
+                            Toggle(item.name, isOn: certificateBinding(item.id))
+                        }
+                        ForEach(forwardCertificateIds.filter { id in !model.keys.contains(where: { $0.id == id }) }, id: \.self) { id in
+                            Toggle("证书不可用：\(id)", isOn: certificateBinding(id))
                         }
                         Text("仅对可信主机启用，选择允许远端使用的私钥。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        if useKey && !useSavedKey { Toggle("当前主机的私钥", isOn: keyBinding(host.id)) }
+                        if (useKey && !useSavedKey) || forwardKeyIds.contains(host.id) {
+                            Toggle("当前主机的私钥", isOn: keyBinding(host.id))
+                        }
                         ForEach(model.hosts.filter { item in
                             guard item.id != host.id else { return false }
                             if case .privateKey = item.auth { return true }
@@ -361,6 +370,10 @@ struct HostEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
+                        if let validationError = validationError {
+                            saveError = validationError
+                            return
+                        }
                         switch authChoice {
                         case 1: host.auth = .privateKey(keyData: keyData, passphrase: passphrase.isEmpty ? nil : passphrase)
                         case 2: host.auth = .keyRef(id: selectedKeyId)
@@ -369,17 +382,14 @@ struct HostEditor: View {
                         }
                         host.forward_agent = forwardAgent
                         host.forward_agent_host_ids = forwardAgent ? forwardKeyIds : []
-                        if !forwardAgent { host.forward_agent_key_ids = [] }
-                        else if forwardCertificateId != originalForwardCertificateId {
-                            host.forward_agent_key_ids = forwardCertificateId.isEmpty ? [] : [forwardCertificateId]
-                        }
+                        host.forward_agent_key_ids = forwardAgent ? forwardCertificateIds : []
                         if selectedJumpID != originalJumpID {
                             host.jump_host_ids = selectedJumpID.isEmpty ? [] : [selectedJumpID]
                         }
                         host.tags = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                         if onSave(host) { dismiss() }
                         else { saveError = model.error ?? "保存主机失败。"; model.error = nil }
-                    }.disabled(host.name.isEmpty || host.hostname.isEmpty || (host.proxy_mode == .proxyJump && selectedJumpID.isEmpty) || (host.proxy_mode == .proxyCommand && (host.proxy_command ?? "").trimmingCharacters(in: .whitespaces).isEmpty) || (authChoice == 2 && !model.keys.contains(where: { $0.id == selectedKeyId })) || (forwardAgent && forwardKeyIds.isEmpty && forwardCertificateId.isEmpty) || (forwardAgent && forwardKeyIds.contains(host.id) && authChoice != 1))
+                    }
                 }
             }
         }
@@ -398,8 +408,7 @@ struct HostEditor: View {
             tagText = host.tags.joined(separator: ", ")
             forwardAgent = host.forward_agent ?? false
             forwardKeyIds = host.forward_agent_host_ids ?? []
-            forwardCertificateId = host.forward_agent_key_ids?.first ?? ""
-            originalForwardCertificateId = forwardCertificateId
+            forwardCertificateIds = host.forward_agent_key_ids ?? []
         }
     }
 
@@ -409,6 +418,26 @@ struct HostEditor: View {
                 if !forwardKeyIds.contains(id) { forwardKeyIds.append(id) }
             } else { forwardKeyIds.removeAll { $0 == id } }
         })
+    }
+
+    private func certificateBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { forwardCertificateIds.contains(id) }, set: { selected in
+            if selected {
+                if !forwardCertificateIds.contains(id) { forwardCertificateIds.append(id) }
+            } else { forwardCertificateIds.removeAll { $0 == id } }
+        })
+    }
+
+    private var validationError: String? {
+        if host.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入主机名称。" }
+        if host.hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入主机地址。" }
+        if host.proxy_mode == .proxyJump && selectedJumpID.isEmpty { return "请选择跳板机。" }
+        if host.proxy_mode == .proxyCommand && (host.proxy_command ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入代理命令。" }
+        if authChoice == 2 && !model.keys.contains(where: { $0.id == selectedKeyId }) { return "请选择用于主机认证的已保存证书。" }
+        if forwardAgent && forwardKeyIds.isEmpty && forwardCertificateIds.isEmpty { return "请在 SSH Agent 转发中勾选至少一个证书或主机私钥。" }
+        if forwardAgent && forwardCertificateIds.contains(where: { id in !model.keys.contains(where: { $0.id == id }) }) { return "转发列表中有不可用的证书，请取消勾选后保存。" }
+        if forwardAgent && forwardKeyIds.contains(host.id) && authChoice != 1 { return "当前主机未使用私钥，请取消勾选当前主机的私钥。" }
+        return nil
     }
 
     private var authChoice: Int {
