@@ -17,6 +17,7 @@ public struct HostEditSheet: View {
     @State private var forwardKeyId: String
 
     @State private var proxyMode: ProxyMode
+    @State private var proxyCommandText: String
     @State private var forwardAgent: Bool
     @State private var forwardAgentHostIds: [String]
     @State private var selectedJumpHostIds: [String]
@@ -70,6 +71,7 @@ public struct HostEditSheet: View {
         _forwardKeyId = State(initialValue: host?.forward_agent_key_ids?.first ?? "")
 
         _proxyMode = State(initialValue: host?.proxy_mode ?? .direct)
+        _proxyCommandText = State(initialValue: host?.proxy_command ?? "")
         _forwardAgent = State(initialValue: host?.forward_agent ?? false)
         _forwardAgentHostIds = State(initialValue: host?.forward_agent_host_ids ?? [])
         _selectedJumpHostIds = State(initialValue: host?.jump_host_ids ?? [])
@@ -233,6 +235,21 @@ public struct HostEditSheet: View {
                                     }
                                 }
                                 .padding(.leading, 8)
+                            } else if proxyMode == .proxyCommand {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("ProxyCommand 本地代理命令 (stdin/stdout 字节流):")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+
+                                    TextField("例如: cloudflared access ssh --hostname %h", text: $proxyCommandText)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(.body, design: .monospaced))
+
+                                    Text("支持 %h（目标主机名）/ %p（端口）占位符。命令在本地执行，SSH 流量经其 stdin/stdout 转发。")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.leading, 8)
                             } else if proxyMode == .cloudflareAccess {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("Cloudflare Access 零信任隧道配置 (WSS 原生传输):")
@@ -357,6 +374,11 @@ public struct HostEditSheet: View {
             return
         }
 
+        if proxyMode == .proxyCommand && proxyCommandText.trimmingCharacters(in: .whitespaces).isEmpty {
+            errorMessage = "ProxyCommand 模式必须填写代理命令"
+            return
+        }
+
         if proxyMode == .cloudflareAccess {
             if cfAuthType == .serviceToken {
                 if cfClientId.trimmingCharacters(in: .whitespaces).isEmpty ||
@@ -415,6 +437,7 @@ public struct HostEditSheet: View {
             forward_agent_host_ids: forwardAgent ? forwardAgentHostIds : [],
             forward_agent_key_ids: forwardAgent && !forwardKeyId.isEmpty ? [forwardKeyId] : [],
             jump_host_ids: proxyMode == .proxyJump ? selectedJumpHostIds : [],
+            proxy_command: proxyMode == .proxyCommand && !proxyCommandText.isEmpty ? proxyCommandText : nil,
             cloudflare_config: cfConfig,
             tags: tags,
             last_connected_at: originalHost?.last_connected_at,

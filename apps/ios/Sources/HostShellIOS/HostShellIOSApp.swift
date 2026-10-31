@@ -272,6 +272,16 @@ struct HostEditor: View {
                             ForEach(model.jumps) { Text("\($0.name) · \($0.hostname)").tag($0.id) }
                         }
                     }
+                    if host.proxy_mode == .proxyCommand {
+                        TextField("ProxyCommand（支持 %h / %p）", text: Binding(
+                            get: { host.proxy_command ?? "" },
+                            set: { host.proxy_command = $0.isEmpty ? nil : $0 }
+                        ))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                        Text("例如: cloudflared access ssh --hostname %h。命令在本地执行，SSH 流量经其 stdin/stdout 转发。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     TextField("标签（逗号分隔）", text: $tagText)
                 }
                 Section("SSH Agent 转发") {
@@ -307,7 +317,7 @@ struct HostEditor: View {
                         host.tags = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                         onSave(host)
                         dismiss()
-                    }.disabled(host.name.isEmpty || host.hostname.isEmpty || (host.proxy_mode == .proxyJump && selectedJumpID.isEmpty) || (useSavedKey && !model.keys.contains(where: { $0.id == selectedKeyId })) || (forwardAgent && forwardKeyIds.isEmpty && forwardCertificateId.isEmpty) || (forwardAgent && forwardKeyIds.contains(host.id) && (useSavedKey || !useKey)))
+                    }.disabled(host.name.isEmpty || host.hostname.isEmpty || (host.proxy_mode == .proxyJump && selectedJumpID.isEmpty) || (host.proxy_mode == .proxyCommand && (host.proxy_command ?? "").trimmingCharacters(in: .whitespaces).isEmpty) || (useSavedKey && !model.keys.contains(where: { $0.id == selectedKeyId })) || (forwardAgent && forwardKeyIds.isEmpty && forwardCertificateId.isEmpty) || (forwardAgent && forwardKeyIds.contains(host.id) && (useSavedKey || !useKey)))
                 }
             }
         }

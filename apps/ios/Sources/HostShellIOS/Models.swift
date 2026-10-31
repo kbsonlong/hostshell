@@ -156,6 +156,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
     public var forward_agent_host_ids: [String]?
     public var forward_agent_key_ids: [String]?
     public var jump_host_ids: [String]
+    public var proxy_command: String?
     public var cloudflare_config: CloudflareConfig?
     public var tags: [String]
     public var last_connected_at: UInt64?
@@ -174,6 +175,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         forward_agent_host_ids: [String] = [],
         forward_agent_key_ids: [String] = [],
         jump_host_ids: [String] = [],
+        proxy_command: String? = nil,
         cloudflare_config: CloudflareConfig? = nil,
         tags: [String] = [],
         last_connected_at: UInt64? = nil,
@@ -191,6 +193,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         self.forward_agent_host_ids = forward_agent_host_ids
         self.forward_agent_key_ids = forward_agent_key_ids
         self.jump_host_ids = jump_host_ids
+        self.proxy_command = proxy_command
         self.cloudflare_config = cloudflare_config
         self.tags = tags
         self.last_connected_at = last_connected_at
