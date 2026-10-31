@@ -422,6 +422,7 @@ struct KeyManagementSheet: View {
     @State private var showingImport = false
     @State private var pendingDelete: SSHKeyMetadata?
     @State private var error: String?
+    @State private var savedKeyName: String?
 
     private func referencingCounts(_ key: SSHKeyMetadata) -> (hosts: Int, jumps: Int, forwards: Int) {
         let hosts = model.hosts.filter { $0.auth == .keyRef(id: key.id) }.count
@@ -492,7 +493,12 @@ struct KeyManagementSheet: View {
                         .accessibilityLabel("导入私钥")
                 }
             }
-            .sheet(isPresented: $showingImport) { KeyImportSheet() }
+            .sheet(isPresented: $showingImport, onDismiss: {
+                if let savedKeyName {
+                    error = "证书“\(savedKeyName)”已保存，可在主机认证中选择。"
+                    self.savedKeyName = nil
+                }
+            }) { KeyImportSheet(onSaved: { savedKeyName = $0 }) }
             .confirmationDialog(
                 "删除证书「\(pendingDelete?.name ?? "")」？",
                 isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
@@ -520,6 +526,7 @@ struct KeyImportSheet: View {
     @State private var key = ""
     @State private var passphrase = ""
     @State private var error: String?
+    let onSaved: (String) -> Void
 
     var body: some View {
         NavigationStack {
@@ -528,13 +535,12 @@ struct KeyImportSheet: View {
                     TextField("证书名称", text: $name)
                     TextEditor(text: $key).frame(minHeight: 140).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .overlay(alignment: .topLeading) {
-                            if key.isEmpty { Text("粘贴 OpenSSH 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) }
+                            if key.isEmpty { Text("粘贴 OpenSSH 或 PEM 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) }
                         }
                     SecureField("私钥密码（可选）", text: $passphrase)
                     Text("私钥保存在 Keychain，可供主机认证和 Agent 转发使用。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
             }
             .navigationTitle("导入私钥")
             .navigationBarTitleDisplayMode(.inline)
@@ -542,11 +548,21 @@ struct KeyImportSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        error = model.addKey(name: name, key: key, passphrase: passphrase)
-                        if error == nil { dismiss() }
-                    }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || key.isEmpty)
+                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmedName.isEmpty else { error = "请输入证书名称。"; return }
+                        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "请粘贴 SSH 私钥内容。"; return }
+                        if let saveError = model.addKey(name: trimmedName, key: key, passphrase: passphrase) {
+                            error = saveError
+                        } else {
+                            onSaved(trimmedName)
+                            dismiss()
+                        }
+                    }
                 }
             }
+            .alert("无法保存证书", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
         }
     }
 }

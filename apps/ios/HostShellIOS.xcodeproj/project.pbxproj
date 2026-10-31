@@ -165,7 +165,8 @@
 		A70000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "HostShellIOS-Simulator.entitlements";
 				DEVELOPMENT_TEAM = 57YMW5BJJ5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = HostShell;
@@ -181,7 +182,8 @@
 		A70000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "HostShellIOS-Simulator.entitlements";
 				DEVELOPMENT_TEAM = 57YMW5BJJ5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = HostShell;
