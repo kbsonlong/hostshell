@@ -15,7 +15,7 @@
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* HostShellIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostShellIOSApp.swift; sourceTree = "<group>"; };
-		A20000000000000000000002 /* HostShellCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = HostShellCore.xcframework; path = ../../target/ios/HostShellCore.xcframework; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000002 /* HostShellCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = HostShellCore.xcframework; path = Frameworks/HostShellCore.xcframework; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000003 /* HostShellIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HostShellIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000004 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */

@@ -15,7 +15,7 @@ let package = Package(
             path: "Sources/HostShellIOS",
             linkerSettings: [
                 .unsafeFlags([
-                    "-L../../target/ios/HostShellCore.xcframework/ios-arm64",
+                    "-LFrameworks/HostShellCore.xcframework/ios-arm64",
                     "-lhostshell_core",
                     "-framework", "Security",
                     "-framework", "SystemConfiguration"

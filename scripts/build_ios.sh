@@ -28,7 +28,7 @@ cargo build --release --target "$TARGET_DEVICE" -p hostshell-core
 echo "==> Compiling for iOS Simulator ($TARGET_SIMULATOR)..."
 cargo build --release --target "$TARGET_SIMULATOR" -p hostshell-core
 
-OUTPUT_DIR="$REPO_ROOT/target/ios"
+OUTPUT_DIR="$REPO_ROOT/apps/ios/Frameworks"
 mkdir -p "$OUTPUT_DIR"
 
 echo "==> Creating iOS XCFramework..."

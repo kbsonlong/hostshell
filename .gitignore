@@ -2,6 +2,7 @@
 /apps/macos/.build
 .DS_Store
 apps/ios/.build
+apps/ios/Frameworks/HostShellCore.xcframework/
 
 # Xcode user state
 *.xcuserstate
