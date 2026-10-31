@@ -28,6 +28,7 @@ cp "$REPO_ROOT/apps/macos/.build/release/HostShell" "$APP_DIR/Contents/MacOS/Hos
 
 # Copy dylib into Frameworks
 cp "$REPO_ROOT/target/release/libhostshell_core.dylib" "$APP_DIR/Contents/Frameworks/libhostshell_core.dylib"
+cp "$REPO_ROOT/apps/macos/Resources/HostShell.icns" "$APP_DIR/Contents/Resources/HostShell.icns"
 
 # Fix rpath in binary and dylib
 install_name_tool -change "$REPO_ROOT/target/debug/deps/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
@@ -47,6 +48,8 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <key>CFBundleIdentifier</key>
     <string>com.hostshell.desktop</string>
     <key>CFBundleName</key>
+    <string>HostShell</string>
+    <key>CFBundleIconFile</key>
     <string>HostShell</string>
     <key>CFBundleDisplayName</key>
     <string>HostShell</string>

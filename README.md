@@ -1,5 +1,7 @@
 # HostShell
 
+<img src="assets/hostshell-logo.svg" alt="HostShell logo" width="96" />
+
 **HostShell** 是一款面向运维工程师 / SRE / 后端开发者的跨端 SSH 客户端，核心是一个纯 Rust 实现的连接内核（`hostshell-core`），上层提供 macOS 桌面 App（SwiftUI）、iOS App（SwiftUI）与终端 CLI 三种形态。
 
 在手机 / 桌面沙盒限制下原生支持三类连接链路：

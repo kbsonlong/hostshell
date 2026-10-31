@@ -11,6 +11,7 @@
 		A10000000000000000000001 /* HostShellIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* HostShellIOSApp.swift */; };
 		A10000000000000000000002 /* HostShellCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* HostShellCore.xcframework */; };
 		A10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* Models.swift */; };
+		A10000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -18,6 +19,7 @@
 		A20000000000000000000002 /* HostShellCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = HostShellCore.xcframework; path = Frameworks/HostShellCore.xcframework; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000003 /* HostShellIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HostShellIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000004 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -37,6 +39,7 @@
 			isa = PBXGroup;
 			children = (
 				A40000000000000000000002 /* Sources/HostShellIOS */,
+				A20000000000000000000005 /* Assets.xcassets */,
 				A20000000000000000000002 /* HostShellCore.xcframework */,
 				A40000000000000000000003 /* Products */,
 			);
@@ -122,6 +125,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000004 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -165,6 +169,7 @@
 		A70000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "HostShellIOS-Simulator.entitlements";
 				DEVELOPMENT_TEAM = 57YMW5BJJ5;
@@ -182,6 +187,7 @@
 		A70000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "HostShellIOS-Simulator.entitlements";
 				DEVELOPMENT_TEAM = 57YMW5BJJ5;
