@@ -419,6 +419,103 @@ struct HostEditor: View {
 struct KeyManagementSheet: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var showingImport = false
+    @State private var pendingDelete: SSHKeyMetadata?
+    @State private var error: String?
+
+    private func referencingCounts(_ key: SSHKeyMetadata) -> (hosts: Int, jumps: Int, forwards: Int) {
+        let hosts = model.hosts.filter { $0.auth == .keyRef(id: key.id) }.count
+        let jumps = model.jumps.filter { $0.auth == .keyRef(id: key.id) }.count
+        let forwards = model.hosts.filter { $0.forward_agent_key_ids?.contains(key.id) == true }.count
+        return (hosts, jumps, forwards)
+    }
+
+    private func usageText(_ key: SSHKeyMetadata) -> String {
+        let usage = referencingCounts(key)
+        var parts: [String] = []
+        if usage.hosts > 0 { parts.append("\(usage.hosts) 台主机") }
+        if usage.jumps > 0 { parts.append("\(usage.jumps) 个跳板机") }
+        if usage.forwards > 0 { parts.append("\(usage.forwards) 处 Agent 转发") }
+        return parts.isEmpty ? "未被引用" : "被 " + parts.joined(separator: " · ") + " 引用"
+    }
+
+    private var deleteWarning: String {
+        guard let key = pendingDelete else { return "" }
+        let usage = referencingCounts(key)
+        if usage.hosts + usage.jumps + usage.forwards > 0 {
+            return usageText(key) + "，需先在主机设置中解除引用才能删除。"
+        }
+        return "私钥将从 Keychain 中移除，此操作不可撤销。"
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if model.keys.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "key").font(.system(size: 42)).foregroundStyle(.tertiary)
+                        Text("暂无证书").font(.headline)
+                        Text("导入 SSH 私钥后，可在主机认证和 Agent 转发中使用。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("导入私钥") { showingImport = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section("已保存证书 · \(model.keys.count)") {
+                            ForEach(model.keys) { item in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.name).font(.headline)
+                                    Text("\(item.algorithm) · \(item.fingerprint)")
+                                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                    Text(usageText(item)).font(.caption2).foregroundStyle(.tertiary)
+                                }
+                                .swipeActions {
+                                    Button(role: .destructive) { pendingDelete = item } label: { Label("删除", systemImage: "trash") }
+                                }
+                            }
+                        }
+                        Section {
+                            Button { showingImport = true } label: {
+                                Label("导入新私钥", systemImage: "plus")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("证书管理")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingImport = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("导入私钥")
+                }
+            }
+            .sheet(isPresented: $showingImport) { KeyImportSheet() }
+            .confirmationDialog(
+                "删除证书「\(pendingDelete?.name ?? "")」？",
+                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("删除", role: .destructive) {
+                    if let key = pendingDelete { error = model.deleteKey(key.id) }
+                    pendingDelete = nil
+                }
+                Button("取消", role: .cancel) { pendingDelete = nil }
+            } message: {
+                Text(deleteWarning)
+            }
+            .alert("HostShell", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+}
+
+struct KeyImportSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var key = ""
     @State private var passphrase = ""
@@ -427,34 +524,29 @@ struct KeyManagementSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("已保存证书") {
-                    if model.keys.isEmpty {
-                        Text("暂无证书，请在下方导入 SSH 私钥。")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(model.keys) { item in
-                        VStack(alignment: .leading) {
-                            Text(item.name)
-                            Text("\(item.algorithm) · \(item.fingerprint)").font(.caption).textSelection(.enabled)
-                            Button("删除", role: .destructive) { error = model.deleteKey(item.id) }
-                        }
-                    }
-                }
                 Section("导入 SSH 私钥") {
                     TextField("证书名称", text: $name)
                     TextEditor(text: $key).frame(minHeight: 140).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .overlay(alignment: .topLeading) {
+                            if key.isEmpty { Text("粘贴 OpenSSH 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) }
+                        }
                     SecureField("私钥密码（可选）", text: $passphrase)
                     Text("私钥保存在 Keychain，可供主机认证和 Agent 转发使用。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("保存证书") {
+                }
+                if let error { Section { Text(error).foregroundStyle(.red) } }
+            }
+            .navigationTitle("导入私钥")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
                         error = model.addKey(name: name, key: key, passphrase: passphrase)
-                        if error == nil { name = ""; key = ""; passphrase = "" }
+                        if error == nil { dismiss() }
                     }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || key.isEmpty)
                 }
-                if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle("证书管理")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
 }
