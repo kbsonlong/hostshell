@@ -7,8 +7,11 @@ use crate::error::{HostShellError, Result};
 use crate::model::host::{AuthMethod, Host, JumpHost, ProxyMode};
 use crate::model::known_host::KnownHostsStore;
 use crate::model::stage::{ConnectionStage, StageEvent};
-use crate::ssh::handler::TargetClientHandler;
+use crate::ssh::handler::{RemoteForwardTargets, TargetClientHandler};
+use crate::ssh::forward::start_forwards;
 use crate::transport::{connect_bastion_chain, connect_cloudflare, connect_direct, connect_proxy_command, BoxedStream};
+
+pub type AuthInputProvider = dyn Fn(&str, &str, &str, bool) -> std::result::Result<String, String>;
 
 /// Load a private key from PEM or OpenSSH text.
 ///
@@ -284,6 +287,7 @@ async fn try_agent_identities<H: russh::client::Handler>(
 pub(crate) async fn authenticate_keyboard_interactive<H: russh::client::Handler>(
     handle: &mut russh::client::Handle<H>,
     user: &str,
+    auth_input: Option<&AuthInputProvider>,
 ) -> std::result::Result<russh::client::AuthResult, String> {
     use russh::client::KeyboardInteractiveAuthResponse;
     use std::io::Write as _;
@@ -315,12 +319,12 @@ pub(crate) async fn authenticate_keyboard_interactive<H: russh::client::Handler>
                 }
                 let mut answers = Vec::with_capacity(prompts.len());
                 for p in &prompts {
-                    eprint!("[auth] {} ", p.prompt);
-                    let _ = std::io::stderr().flush();
-                    let line = if p.echo {
-                        read_line()
+                    let line = if let Some(provider) = auth_input {
+                        provider(&name, &instructions, &p.prompt, p.echo)?
                     } else {
-                        read_line_noecho()
+                        eprint!("[auth] {} ", p.prompt);
+                        let _ = std::io::stderr().flush();
+                        if p.echo { read_line() } else { read_line_noecho() }
                     };
                     answers.push(line);
                 }
@@ -393,6 +397,28 @@ pub struct SshSession;
 
 impl SshSession {
     pub async fn connect(
+        host: Host,
+        jump_hosts: Vec<JumpHost>,
+        stored_hosts: Vec<Host>,
+        known_hosts: Arc<Mutex<KnownHostsStore>>,
+        cols: u32,
+        rows: u32,
+        auto_accept_new_keys: bool,
+    ) -> Result<SessionHandle> {
+        Self::connect_with_auth_input(
+            host,
+            jump_hosts,
+            stored_hosts,
+            known_hosts,
+            cols,
+            rows,
+            auto_accept_new_keys,
+            None,
+        )
+        .await
+    }
+
+    pub async fn connect_with_auth_input(
         mut host: Host,
         mut jump_hosts: Vec<JumpHost>,
         stored_hosts: Vec<Host>,
@@ -400,6 +426,7 @@ impl SshSession {
         cols: u32,
         rows: u32,
         auto_accept_new_keys: bool,
+        auth_input: Option<&AuthInputProvider>,
     ) -> Result<SessionHandle> {
         host.auth = crate::storage::keys::resolve_auth(&host.auth).map_err(HostShellError::Config)?;
         for jump in &mut jump_hosts {
@@ -439,6 +466,7 @@ impl SshSession {
                     host.port,
                     connect_timeout,
                     Some(&stage_tx),
+                    auth_input,
                 )
                 .await
                 .map_err(|e| {
@@ -538,6 +566,7 @@ impl SshSession {
         } else {
             None
         };
+        let remote_forward_targets = RemoteForwardTargets::default();
         let handler = TargetClientHandler {
             hostname: host.hostname.clone(),
             port: host.port,
@@ -545,6 +574,7 @@ impl SshSession {
             stage_tx: Some(stage_tx.clone()),
             auto_accept_new_keys,
             agent,
+            remote_forwards: remote_forward_targets.clone(),
         };
 
         let mut handle = timeout(
@@ -617,7 +647,7 @@ impl SshSession {
                     username: host.username.clone(),
                     method: "keyboard-interactive".to_string(),
                 }));
-                auth_res = match authenticate_keyboard_interactive(&mut handle, &host.username).await {
+                auth_res = match authenticate_keyboard_interactive(&mut handle, &host.username, auth_input).await {
                     Ok(res) => Ok(res),
                     Err(reason) => {
                         let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
@@ -664,6 +694,13 @@ impl SshSession {
                 });
             }
         }
+
+        let handle = Arc::new(handle);
+        let forward_runtime = start_forwards(
+            Arc::clone(&handle),
+            host.port_forwards.as_deref().unwrap_or_default(),
+            remote_forward_targets,
+        ).await?;
 
         // 4. Open PTY and Shell Channel
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::OpeningPty));
@@ -751,6 +788,8 @@ impl SshSession {
             }
 
             let _ = channel.close().await;
+            forward_runtime.stop(&handle).await;
+            let _ = handle.disconnect(russh::Disconnect::ByApplication, "HostShell session closed", "en").await;
             tracing::info!("Session actor terminated");
         });
 

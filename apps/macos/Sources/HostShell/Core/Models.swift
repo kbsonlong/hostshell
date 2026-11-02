@@ -144,6 +144,77 @@ public struct JumpHost: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+public struct ForwardEndpoint: Codable, Equatable, Sendable {
+    public var endpoint_type: String
+    public var address: String?
+    public var port: UInt16?
+    public var path: String?
+
+    public var displayName: String {
+        if endpoint_type == "streamlocal" { return path ?? "Unix socket" }
+        return "\(address ?? "127.0.0.1"):\(port ?? 0)"
+    }
+
+    public var configValue: String { endpoint_type == "streamlocal" ? (path ?? "") : displayName }
+}
+
+public struct PortForwardRule: Codable, Equatable, Identifiable, Sendable {
+    public var direction: String
+    public var bind: ForwardEndpoint
+    public var target: ForwardEndpoint?
+
+    public var id: String { "\(direction):\(bind.displayName):\(target?.displayName ?? "")" }
+
+    public var displayName: String {
+        let title = direction == "dynamic" ? "SOCKS5" : (direction == "remote" ? "RemoteForward" : "LocalForward")
+        guard let target else { return "\(title) · \(bind.displayName)" }
+        return "\(title) · \(bind.displayName) → \(target.displayName)"
+    }
+
+    public static func parse(direction: String, bind: String, target: String) -> PortForwardRule? {
+        guard ["local", "remote", "dynamic"].contains(direction),
+              let bindEndpoint = parseEndpoint(bind, expandTilde: direction != "remote") else { return nil }
+        if direction == "dynamic" {
+            guard bindEndpoint.endpoint_type == "tcp" else { return nil }
+            return PortForwardRule(direction: direction, bind: bindEndpoint, target: nil)
+        }
+        guard let targetEndpoint = parseEndpoint(target, expandTilde: direction == "remote") else { return nil }
+        return PortForwardRule(direction: direction, bind: bindEndpoint, target: targetEndpoint)
+    }
+
+    private static func parseEndpoint(_ rawValue: String, expandTilde: Bool) -> ForwardEndpoint? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let isSocket = value.hasPrefix("/") || value.hasPrefix("~") || value.hasPrefix("./")
+            || (!value.contains(":") && UInt16(value) == nil)
+        if isSocket {
+            let path = expandTilde ? (value as NSString).expandingTildeInPath : value
+            return ForwardEndpoint(endpoint_type: "streamlocal", address: nil, port: nil, path: path)
+        }
+
+        let address: String
+        let portText: String
+        if value.hasPrefix("["), let close = value.firstIndex(of: "]"), value[value.index(after: close)...].hasPrefix(":") {
+            address = String(value[value.index(after: value.startIndex)..<close])
+            portText = String(value[value.index(after: close)...].dropFirst())
+        } else if let colon = value.lastIndex(of: ":") {
+            address = String(value[..<colon])
+            portText = String(value[value.index(after: colon)...])
+            if address.contains(":"), !value.hasPrefix("[") { return nil }
+        } else {
+            address = "127.0.0.1"
+            portText = value
+        }
+        guard let port = UInt16(portText), port > 0 else { return nil }
+        return ForwardEndpoint(
+            endpoint_type: "tcp",
+            address: address == "*" ? "0.0.0.0" : (address.isEmpty ? "127.0.0.1" : address),
+            port: port,
+            path: nil
+        )
+    }
+}
+
 public struct Host: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var name: String
@@ -158,6 +229,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
     public var jump_host_ids: [String]
     public var proxy_command: String?
     public var cloudflare_config: CloudflareConfig?
+    public var port_forwards: [PortForwardRule]?
     public var tags: [String]
     public var last_connected_at: UInt64?
     public var created_at: UInt64
@@ -177,6 +249,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         jump_host_ids: [String] = [],
         proxy_command: String? = nil,
         cloudflare_config: CloudflareConfig? = nil,
+        port_forwards: [PortForwardRule]? = [],
         tags: [String] = [],
         last_connected_at: UInt64? = nil,
         created_at: UInt64 = UInt64(Date().timeIntervalSince1970),
@@ -195,6 +268,7 @@ public struct Host: Codable, Identifiable, Equatable, Sendable {
         self.jump_host_ids = jump_host_ids
         self.proxy_command = proxy_command
         self.cloudflare_config = cloudflare_config
+        self.port_forwards = port_forwards
         self.tags = tags
         self.last_connected_at = last_connected_at
         self.created_at = created_at

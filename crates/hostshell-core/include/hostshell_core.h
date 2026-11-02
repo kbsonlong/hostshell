@@ -14,6 +14,16 @@ typedef struct SessionWrapper SessionWrapper;
 
 typedef void (*StageCallback)(const char *event_json, void *user_data);
 typedef void (*OutputCallback)(const uint8_t *data, size_t len, void *user_data);
+/* Return response byte count, -1 to cancel, or -2 if the response does not fit. */
+typedef int32_t (*AuthInputCallback)(
+    const char *name,
+    const char *instructions,
+    const char *prompt,
+    bool echo,
+    char *response,
+    size_t response_capacity,
+    void *user_data
+);
 
 EngineWrapper *hostshell_engine_init(void);
 void hostshell_engine_free(EngineWrapper *engine);
@@ -37,6 +47,18 @@ SessionWrapper *hostshell_connect(
     bool auto_accept_new_keys,
     StageCallback stage_cb,
     OutputCallback output_cb,
+    void *user_data
+);
+
+SessionWrapper *hostshell_connect_with_auth_input(
+    EngineWrapper *engine,
+    const char *host_json,
+    uint32_t cols,
+    uint32_t rows,
+    bool auto_accept_new_keys,
+    StageCallback stage_cb,
+    OutputCallback output_cb,
+    AuthInputCallback auth_input_cb,
     void *user_data
 );
 

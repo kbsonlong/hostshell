@@ -4,6 +4,7 @@ import AppKit
 public struct ConnectionStageView: View {
     @ObservedObject var sessionVM: SessionViewModel
     public let onCancel: () -> Void
+    @State private var didCopyDiagnostics = false
 
     public var body: some View {
         VStack(spacing: 20) {
@@ -125,12 +126,15 @@ public struct ConnectionStageView: View {
                     onCancel()
                 }
 
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(diagnostics, forType: .string)
-                } label: {
-                    Label("复制连接详情", systemImage: "doc.on.doc")
+                Button(action: copyDiagnostics) {
+                    Label(
+                        didCopyDiagnostics ? "已复制连接详情" : "复制连接详情",
+                        systemImage: didCopyDiagnostics ? "checkmark.circle.fill" : "doc.on.doc"
+                    )
                 }
+                .buttonStyle(.bordered)
+                .tint(didCopyDiagnostics ? .green : .accentColor)
+                .accessibilityHint("复制主机、连接阶段、错误原因和排错建议")
 
                 Spacer()
 
@@ -144,19 +148,96 @@ public struct ConnectionStageView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(item: $sessionVM.authPromptInfo) { prompt in
+            AuthInputSheet(sessionVM: sessionVM, prompt: prompt)
+                .interactiveDismissDisabled()
+        }
+    }
+
+    private func copyDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(diagnostics, forType: .string)
+        didCopyDiagnostics = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            didCopyDiagnostics = false
+        }
     }
 
     private var diagnostics: String {
-        var lines = ["主机: \(sessionVM.host.name) (\(sessionVM.host.username)@\(sessionVM.host.hostname):\(sessionVM.host.port))",
-                     "连接方式: \(sessionVM.host.proxy_mode.displayName)"]
-        lines += sessionVM.stages.map(\.description)
+        var sections = [
+            "HostShell 连接诊断",
+            "==================",
+            "\n【连接目标】",
+            "主机：\(sessionVM.host.name)",
+            "地址：\(sessionVM.host.username)@\(sessionVM.host.hostname):\(sessionVM.host.port)",
+            "连接方式：\(sessionVM.host.proxy_mode.displayName)"
+        ]
+
+        if !sessionVM.stages.isEmpty {
+            let stageLines = sessionVM.stages.enumerated().map { index, stage in
+                "\(index + 1). \(stage.description)"
+            }
+            sections.append("\n【连接过程】\n" + stageLines.joined(separator: "\n"))
+        }
+
         if let failure = sessionVM.failureInfo {
-            lines += ["故障阶段: \(failure.stage)", "错误分类: \(failure.category)",
-                      "错误详情: \(failure.message)", "排错建议: \(failure.suggestion)"]
+            sections.append(
+                "\n【故障定位】\n故障阶段：\(failure.stage)\n错误分类：\(failure.category)"
+            )
+            sections.append("\n【错误详情】\n\(failure.message)")
+            sections.append("\n【排错建议】\n\(failure.suggestion)")
         }
         if sessionVM.isDisconnected && !sessionVM.disconnectReason.isEmpty {
-            lines.append("断开原因: \(sessionVM.disconnectReason)")
+            sections.append("\n【断开原因】\n\(sessionVM.disconnectReason)")
         }
-        return lines.joined(separator: "\n")
+        return sections.joined(separator: "\n") + "\n"
+    }
+}
+
+private struct AuthInputSheet: View {
+    @ObservedObject var sessionVM: SessionViewModel
+    let prompt: AuthPromptInfo
+    @State private var response = ""
+    @FocusState private var responseFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("SSH authentication challenge")
+                .font(.headline)
+            if !prompt.name.isEmpty {
+                Text(prompt.name)
+                    .font(.subheadline)
+            }
+            if !prompt.instructions.isEmpty {
+                Text(prompt.instructions)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Group {
+                if prompt.echo {
+                    TextField(prompt.prompt, text: $response)
+                } else {
+                    SecureField(prompt.prompt, text: $response)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .focused($responseFocused)
+
+            HStack {
+                Button("取消") {
+                    sessionVM.cancelAuthInput(for: prompt.id)
+                }
+                Spacer()
+                Button("提交") {
+                    sessionVM.submitAuthInput(response, for: prompt.id)
+                    response = ""
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+        .onAppear { responseFocused = true }
     }
 }

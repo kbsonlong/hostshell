@@ -47,6 +47,28 @@ pub struct JumpHost {
     pub auth: AuthMethod,
 }
 
+/// One SSH port/socket forwarding rule imported from OpenSSH configuration.
+/// `direction` is `local`, `remote`, or `dynamic`; `endpoint_type` is `tcp` or
+/// `streamlocal`. A dynamic rule only uses its bind endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardEndpoint {
+    pub endpoint_type: String,
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortForwardRule {
+    pub direction: String,
+    pub bind: ForwardEndpoint,
+    #[serde(default)]
+    pub target: Option<ForwardEndpoint>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Host {
     pub id: String,
@@ -67,6 +89,8 @@ pub struct Host {
     /// Raw ProxyCommand template string (e.g. `/opt/homebrew/bin/cloudflared access ssh --hostname %h`)
     #[serde(default)]
     pub proxy_command: Option<String>,
+    #[serde(default)]
+    pub port_forwards: Option<Vec<PortForwardRule>>,
     pub tags: Vec<String>,
     pub last_connected_at: Option<u64>,
     pub created_at: u64,

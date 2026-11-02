@@ -18,13 +18,17 @@ import UniformTypeIdentifiers
 @_silgen_name("hostshell_list_jump_hosts") private func c_list_jumps(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_save_jump_host") private func c_save_jump(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_import_ssh_config") private func c_import_config(_ engine: OpaquePointer?, _ text: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("hostshell_connect") private func c_connect(_ engine: OpaquePointer?, _ host: UnsafePointer<CChar>?, _ cols: UInt32, _ rows: UInt32, _ autoAccept: Bool, _ stage: StageCallback?, _ output: OutputCallback?, _ ctx: UnsafeMutableRawPointer?) -> OpaquePointer?
+@_silgen_name("hostshell_connect_with_auth_input") private func c_connect(_ engine: OpaquePointer?, _ host: UnsafePointer<CChar>?, _ cols: UInt32, _ rows: UInt32, _ autoAccept: Bool, _ stage: StageCallback?, _ output: OutputCallback?, _ authInput: AuthInputCallback?, _ ctx: UnsafeMutableRawPointer?) -> OpaquePointer?
 @_silgen_name("hostshell_session_write") private func c_session_write(_ session: OpaquePointer?, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int32
 @_silgen_name("hostshell_session_resize") private func c_session_resize(_ session: OpaquePointer?, _ cols: UInt32, _ rows: UInt32) -> Int32
 @_silgen_name("hostshell_session_close") private func c_session_close(_ session: OpaquePointer?)
 
 private typealias StageCallback = @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
 private typealias OutputCallback = @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void
+private typealias AuthInputCallback = @convention(c) (
+    UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Bool,
+    UnsafeMutablePointer<CChar>?, Int, UnsafeMutableRawPointer?
+) -> Int32
 
 struct ImportResponse: Decodable {
     let hosts: [Host]
@@ -99,14 +103,21 @@ final class AppModel: ObservableObject {
         return try? JSONDecoder().decode(ImportResponse.self, from: Data(String(cString: ptr).utf8))
     }
 
-    func connect(_ host: Host, onStage: @escaping (String) -> Void, onOutput: @escaping (Data) -> Void) -> Session {
-        let context = IOSCallbacks(onStage: onStage, onOutput: onOutput)
+    func connect(
+        _ host: Host,
+        onStage: @escaping (String) -> Void,
+        onOutput: @escaping (Data) -> Void,
+        onAuthInput: @escaping (String, String, String, Bool) -> String?
+    ) -> Session {
+        let context = IOSCallbacks(onStage: onStage, onOutput: onOutput, onAuthInput: onAuthInput)
         let opaque = Unmanaged.passRetained(context).toOpaque()
         guard let data = try? JSONEncoder().encode(host), let json = String(data: data, encoding: .utf8) else {
             Unmanaged<IOSCallbacks>.fromOpaque(opaque).release()
             return Session(pointer: nil)
         }
-        let pointer = json.withCString { c_connect(engine, $0, 80, 24, true, iosStageCallback, iosOutputCallback, opaque) }
+        let pointer = json.withCString {
+            c_connect(engine, $0, 80, 24, true, iosStageCallback, iosOutputCallback, iosAuthInputCallback, opaque)
+        }
         if pointer == nil { Unmanaged<IOSCallbacks>.fromOpaque(opaque).release() }
         return Session(pointer: pointer, context: pointer == nil ? nil : opaque)
     }
@@ -121,9 +132,15 @@ final class AppModel: ObservableObject {
 private final class IOSCallbacks {
     let onStage: (String) -> Void
     let onOutput: (Data) -> Void
-    init(onStage: @escaping (String) -> Void, onOutput: @escaping (Data) -> Void) {
+    let onAuthInput: (String, String, String, Bool) -> String?
+    init(
+        onStage: @escaping (String) -> Void,
+        onOutput: @escaping (Data) -> Void,
+        onAuthInput: @escaping (String, String, String, Bool) -> String?
+    ) {
         self.onStage = onStage
         self.onOutput = onOutput
+        self.onAuthInput = onAuthInput
     }
 }
 
@@ -136,6 +153,22 @@ private let iosOutputCallback: OutputCallback = { bytes, length, context in
     guard let bytes, length > 0, let context else { return }
     let box = Unmanaged<IOSCallbacks>.fromOpaque(context).takeUnretainedValue()
     box.onOutput(Data(bytes: bytes, count: length))
+}
+private let iosAuthInputCallback: AuthInputCallback = { name, instructions, prompt, echo, responseBuffer, capacity, context in
+    guard let name, let instructions, let prompt, let responseBuffer, let context, capacity >= 0 else { return -1 }
+    let box = Unmanaged<IOSCallbacks>.fromOpaque(context).takeUnretainedValue()
+    guard let response = box.onAuthInput(
+        String(cString: name),
+        String(cString: instructions),
+        String(cString: prompt),
+        echo
+    ) else { return -1 }
+    let bytes = Array(response.utf8)
+    guard bytes.count <= capacity else { return -2 }
+    for (index, byte) in bytes.enumerated() {
+        responseBuffer[index] = CChar(bitPattern: byte)
+    }
+    return Int32(bytes.count)
 }
 
 final class Session: ObservableObject {
@@ -199,6 +232,9 @@ struct HostListScreen: View {
                                         Text(host.name).font(.headline)
                                         Spacer()
                                         Text(host.proxy_mode.badgeName).font(.caption2).padding(4).background(.blue.opacity(0.12)).clipShape(Capsule())
+                                        if let forwards = host.port_forwards, !forwards.isEmpty {
+                                            Text("\(forwards.count) 隧道").font(.caption2).padding(4).background(.cyan.opacity(0.12)).clipShape(Capsule())
+                                        }
                                     }
                                     Text("\(host.username)@\(host.hostname):\(host.port)").font(.caption).foregroundStyle(.secondary)
                                 }
@@ -270,6 +306,11 @@ struct HostEditor: View {
     @State private var selectedKeyId = ""
     @State private var tagText = ""
     @State private var selectedJumpID = ""
+    @State private var forwardDirection = "local"
+    @State private var forwardBind = "127.0.0.1:8080"
+    @State private var forwardTarget = "127.0.0.1:80"
+    @State private var editingForwardIndex: Int?
+    @State private var forwardError: String?
     @State private var forwardAgent = false
     @State private var forwardKeyIds: [String] = []
     @State private var forwardCertificateIds: [String] = []
@@ -334,6 +375,45 @@ struct HostEditor: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     TextField("标签（逗号分隔）", text: $tagText)
+                }
+                Section("SSH 隧道与 Socket 转发") {
+                    if let forwards = host.port_forwards, !forwards.isEmpty {
+                        ForEach(forwards.indices, id: \.self) { index in
+                            HStack {
+                                Text(forwards[index].displayName)
+                                    .font(.system(.footnote, design: .monospaced))
+                                Spacer()
+                                Button("编辑") { editForward(at: index) }
+                                Button(role: .destructive) {
+                                    var updated = host.port_forwards ?? []
+                                    updated.remove(at: index)
+                                    host.port_forwards = updated
+                                    if editingForwardIndex != nil { resetForwardForm() }
+                                } label: { Image(systemName: "trash") }
+                            }
+                        }
+                    } else {
+                        Text("尚未配置转发规则。规则会在 SSH 会话建立后启动。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Picker("转发类型", selection: $forwardDirection) {
+                        Text("本地 TCP / Socket").tag("local")
+                        Text("SOCKS5 动态转发").tag("dynamic")
+                        Text("远程 TCP / Socket").tag("remote")
+                    }
+                    TextField(bindEndpointTitle, text: $forwardBind)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    if forwardDirection != "dynamic" {
+                        TextField(targetEndpointTitle, text: $forwardTarget)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    Text("TCP 示例：127.0.0.1:18085；Unix socket 示例：/tmp/hostshell.sock。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if let forwardError { Text(forwardError).font(.footnote).foregroundStyle(.red) }
+                    HStack {
+                        Button(editingForwardIndex == nil ? "添加转发规则" : "保存修改") { saveForward() }
+                        if editingForwardIndex != nil { Button("取消编辑") { resetForwardForm() } }
+                    }
                 }
                 Section("SSH Agent 转发") {
                     Toggle("转发应用内 SSH Agent", isOn: $forwardAgent)
@@ -426,6 +506,52 @@ struct HostEditor: View {
                 if !forwardCertificateIds.contains(id) { forwardCertificateIds.append(id) }
             } else { forwardCertificateIds.removeAll { $0 == id } }
         })
+    }
+
+    private var bindEndpointTitle: String {
+        switch forwardDirection {
+        case "remote": return "远端监听地址和端口，或远端 socket 路径"
+        case "dynamic": return "本地 SOCKS5 监听地址和端口"
+        default: return "本地监听地址和端口，或本地 socket 路径"
+        }
+    }
+
+    private var targetEndpointTitle: String {
+        forwardDirection == "remote"
+            ? "本地目标 host:port 或本地 socket 路径"
+            : "远端目标 host:port 或远端 socket 路径"
+    }
+
+    private func editForward(at index: Int) {
+        guard let rule = host.port_forwards?[index] else { return }
+        forwardDirection = rule.direction
+        forwardBind = rule.bind.configValue
+        forwardTarget = rule.target?.configValue ?? ""
+        editingForwardIndex = index
+        forwardError = nil
+    }
+
+    private func saveForward() {
+        guard let rule = PortForwardRule.parse(direction: forwardDirection, bind: forwardBind, target: forwardTarget) else {
+            forwardError = "端点格式无效。TCP 使用 host:port，Unix socket 使用路径；端口需为 1–65535。"
+            return
+        }
+        var updated = host.port_forwards ?? []
+        if let index = editingForwardIndex, updated.indices.contains(index) {
+            updated[index] = rule
+        } else {
+            updated.append(rule)
+        }
+        host.port_forwards = updated
+        resetForwardForm()
+    }
+
+    private func resetForwardForm() {
+        editingForwardIndex = nil
+        forwardDirection = "local"
+        forwardBind = "127.0.0.1:8080"
+        forwardTarget = "127.0.0.1:80"
+        forwardError = nil
     }
 
     private var validationError: String? {
@@ -685,6 +811,10 @@ struct ImportSheet: View {
                                 Text(host.name).font(.headline)
                                 Text("\(host.username)@\(host.hostname):\(host.port) · \(host.proxy_mode.badgeName)")
                                     .font(.caption).foregroundStyle(.secondary)
+                                ForEach(host.port_forwards ?? []) { rule in
+                                    Label(rule.displayName, systemImage: "point.3.connected.trianglepath.dotted")
+                                        .font(.caption2).foregroundStyle(.blue)
+                                }
                             }
                         }
                         ForEach(result.warnings, id: \.self) { warning in
@@ -745,6 +875,37 @@ struct ImportSheet: View {
     }
 }
 
+struct IOSAuthPromptInfo: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let instructions: String
+    let prompt: String
+    let echo: Bool
+}
+
+final class IOSAuthPromptWaiter {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var completed = false
+    private var response: String?
+
+    func complete(_ response: String?) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        self.response = response
+        completed = true
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func wait() -> String? {
+        semaphore.wait()
+        lock.lock()
+        defer { lock.unlock() }
+        return response
+    }
+}
+
 struct HostSessionScreen: View {
     @EnvironmentObject private var model: AppModel
     let host: Host
@@ -791,6 +952,10 @@ struct HostSessionScreen: View {
                 }
             }
         }
+        .sheet(item: $terminal.authPromptInfo) { prompt in
+            IOSAuthInputSheet(terminal: terminal, prompt: prompt)
+                .interactiveDismissDisabled()
+        }
         .task {
             let newSession = await Task.detached(priority: .userInitiated) {
                 model.connect(host, onStage: { json in
@@ -810,12 +975,32 @@ struct HostSessionScreen: View {
                     }
                 }, onOutput: { data in
                     DispatchQueue.main.async { terminal.output?(data) }
+                }, onAuthInput: { name, instructions, prompt, echo in
+                    let info = IOSAuthPromptInfo(
+                        id: UUID(),
+                        name: name,
+                        instructions: instructions,
+                        prompt: prompt,
+                        echo: echo
+                    )
+                    let waiter = IOSAuthPromptWaiter()
+                    DispatchQueue.main.sync {
+                        terminal.beginAuthPrompt(info, waiter: waiter)
+                    }
+                    let response = waiter.wait()
+                    DispatchQueue.main.sync {
+                        terminal.endAuthPrompt(info.id)
+                    }
+                    return response
                 })
             }.value
             terminal.session = newSession
             terminal.input = { [weak newSession] bytes in newSession?.write(bytes) }
         }
-        .onDisappear { terminal.session?.close() }
+        .onDisappear {
+            terminal.cancelPendingAuthPrompt()
+            terminal.session?.close()
+        }
     }
 
     private func terminalKeyButton(_ title: String, bytes: [UInt8]) -> some View {
@@ -830,6 +1015,73 @@ final class TerminalModel: ObservableObject {
     var session: Session?
     var output: ((Data) -> Void)?
     var input: (([UInt8]) -> Void)?
+    @Published var authPromptInfo: IOSAuthPromptInfo?
+    private var authPromptWaiter: IOSAuthPromptWaiter?
+
+    func beginAuthPrompt(_ info: IOSAuthPromptInfo, waiter: IOSAuthPromptWaiter) {
+        authPromptInfo = info
+        authPromptWaiter = waiter
+    }
+
+    func endAuthPrompt(_ id: UUID) {
+        if authPromptInfo?.id == id { authPromptInfo = nil }
+        if authPromptInfo == nil { authPromptWaiter = nil }
+    }
+
+    func submitAuthInput(_ response: String, for id: UUID) {
+        guard authPromptInfo?.id == id else { return }
+        authPromptWaiter?.complete(response)
+    }
+
+    func cancelAuthInput(for id: UUID) {
+        guard authPromptInfo?.id == id else { return }
+        authPromptWaiter?.complete(nil)
+    }
+
+    func cancelPendingAuthPrompt() {
+        authPromptWaiter?.complete(nil)
+        authPromptWaiter = nil
+        authPromptInfo = nil
+    }
+}
+
+private struct IOSAuthInputSheet: View {
+    @ObservedObject var terminal: TerminalModel
+    let prompt: IOSAuthPromptInfo
+    @State private var response = ""
+    @FocusState private var responseFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if !prompt.name.isEmpty { Text(prompt.name) }
+                    if !prompt.instructions.isEmpty { Text(prompt.instructions).font(.footnote) }
+                }
+                Section {
+                    if prompt.echo {
+                        TextField(prompt.prompt, text: $response).focused($responseFocused)
+                    } else {
+                        SecureField(prompt.prompt, text: $response).focused($responseFocused)
+                    }
+                }
+            }
+            .navigationTitle("SSH authentication challenge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { terminal.cancelAuthInput(for: prompt.id) }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("提交") {
+                        terminal.submitAuthInput(response, for: prompt.id)
+                        response = ""
+                    }
+                }
+            }
+            .onAppear { responseFocused = true }
+        }
+    }
 }
 
 struct IOSSwiftTerm: UIViewRepresentable {

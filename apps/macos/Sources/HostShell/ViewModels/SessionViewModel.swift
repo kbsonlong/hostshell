@@ -23,6 +23,37 @@ public struct HostKeyPromptInfo: Equatable {
     public let fingerprint: String
 }
 
+public struct AuthPromptInfo: Identifiable, Equatable {
+    public let id: UUID
+    public let name: String
+    public let instructions: String
+    public let prompt: String
+    public let echo: Bool
+}
+
+private final class AuthPromptWaiter {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var completed = false
+    private var response: String?
+
+    func complete(_ response: String?) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        self.response = response
+        completed = true
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func wait() -> String? {
+        semaphore.wait()
+        lock.lock()
+        defer { lock.unlock() }
+        return response
+    }
+}
+
 @MainActor
 public final class SessionViewModel: ObservableObject {
     public let host: Host
@@ -39,6 +70,8 @@ public final class SessionViewModel: ObservableObject {
     @Published public var stages: [StageItem] = []
     @Published public var failureInfo: FailureInfo? = nil
     @Published public var hostKeyPrompt: HostKeyPromptInfo? = nil
+    @Published public var authPromptInfo: AuthPromptInfo? = nil
+    private var authPromptWaiter: AuthPromptWaiter?
 
     /// Raw byte chunks pending for the terminal emulator (SwiftTerm drains this).
     private var pendingOutput = Data()
@@ -87,6 +120,35 @@ public final class SessionViewModel: ObservableObject {
                         guard let self, self.connectionID == attemptID else { return }
                         self.handleRawOutput(data)
                     }
+                },
+                onAuthInput: { [weak self] name, instructions, prompt, echo in
+                    guard let self else { return nil }
+                    let waiter = AuthPromptWaiter()
+                    let info = AuthPromptInfo(
+                        id: UUID(),
+                        name: name,
+                        instructions: instructions,
+                        prompt: prompt,
+                        echo: echo
+                    )
+                    DispatchQueue.main.sync {
+                        guard self.connectionID == attemptID else {
+                            waiter.complete(nil)
+                            return
+                        }
+                        self.authPromptWaiter = waiter
+                        self.authPromptInfo = info
+                    }
+                    let response = waiter.wait()
+                    DispatchQueue.main.sync {
+                        if self.authPromptInfo?.id == info.id {
+                            self.authPromptInfo = nil
+                        }
+                        if self.authPromptWaiter === waiter {
+                            self.authPromptWaiter = nil
+                        }
+                    }
+                    return response
                 }
             )
 
@@ -153,10 +215,23 @@ public final class SessionViewModel: ObservableObject {
 
     public func disconnect() {
         connectionID = UUID()
+        authPromptWaiter?.complete(nil)
+        authPromptWaiter = nil
+        authPromptInfo = nil
         sessionBridge?.close()
         sessionBridge = nil
         isConnecting = false
         isConnected = false
+    }
+
+    public func submitAuthInput(_ response: String, for promptID: UUID) {
+        guard authPromptInfo?.id == promptID else { return }
+        authPromptWaiter?.complete(response)
+    }
+
+    public func cancelAuthInput(for promptID: UUID) {
+        guard authPromptInfo?.id == promptID else { return }
+        authPromptWaiter?.complete(nil)
     }
 
     private func handleRawOutput(_ data: Data) {

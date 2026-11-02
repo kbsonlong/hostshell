@@ -5,6 +5,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "==> Building HostShell for macOS..."
 echo "==> Repo root: $REPO_ROOT"
 
+# Prefer the configured rustup toolchain over Homebrew's Rust binaries when it
+# is installed. Homebrew's LLVM-linked rustc may depend on a mismatched Z3 dylib.
+if [ -x "$HOME/.cargo/bin/rustup" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 # 1. Build Rust core library (release)
 echo "==> 1. Compiling Rust hostshell-core..."
 cd "$REPO_ROOT"

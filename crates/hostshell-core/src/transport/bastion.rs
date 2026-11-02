@@ -135,6 +135,7 @@ pub async fn connect_bastion_chain(
     target_port: u16,
     timeout_duration: Duration,
     stage_tx: Option<&UnboundedSender<StageEvent>>,
+    auth_input: Option<&crate::ssh::session::AuthInputProvider>,
 ) -> Result<BoxedStream> {
     if jump_hosts.is_empty() {
         return Err(HostShellError::Proxy(
@@ -215,7 +216,11 @@ pub async fn connect_bastion_chain(
                     }));
                 }
                 auth_res = match
-                    crate::ssh::session::authenticate_keyboard_interactive(&mut handle, &hop.username)
+                    crate::ssh::session::authenticate_keyboard_interactive(
+                        &mut handle,
+                        &hop.username,
+                        auth_input,
+                    )
                         .await
                 {
                     Ok(res) => Ok(res),

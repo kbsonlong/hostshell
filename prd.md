@@ -51,7 +51,6 @@
 ### 1.5 非目标（首版不做）
 
 - SFTP 文件管理（引擎预留，产品首版不暴露）
-- 本地/远程端口转发
 - SSH Agent Forwarding
 - 多窗口分屏终端
 - 团队资产共享与云端同步
@@ -102,7 +101,7 @@
 | **MVP** | 直连 SSH、单跳 ProxyJump、Cloudflare Access Service Token、主机卡片、终端+辅助键盘、Keychain/Keystore、阶段状态、known_hosts 首次信任 | P0 |
 | **V1.1** | 多跳 ProxyJump、Cloudflare Web SSO、`~/.ssh/config` 导入、后台恢复与一键重连、连接诊断日志 | P1 |
 | **V1.2** | 跳板机资产库拖拽排序、生物识别、证书固定、多会话标签 | P1/P2 |
-| **V2** | SFTP、端口转发、团队资产同步 | P2 |
+| **V2** | SFTP、团队资产同步 | P2 |
 
 ---
 
@@ -289,10 +288,17 @@ HostShell
 | FR-73 | 识别 `ProxyCommand cloudflared access ssh --hostname %h` | P1 | 自动切换 Cloudflare Access 模式 |
 | FR-74 | 不支持项提示 | P1 | 无法识别的 ProxyCommand 明确标记“不支持”，不静默直连 |
 | FR-75 | 导入预览与冲突处理 | P1 | 同名主机提示覆盖/跳过/重命名 |
+| FR-76 | 本地 TCP 隧道 | P1 | 识别并运行 `LocalForward [bind_address:]port host:hostport` |
+| FR-77 | SOCKS5 动态隧道 | P1 | 识别并运行 `DynamicForward [bind_address:]port`，支持 SOCKS5 CONNECT |
+| FR-78 | RemoteForward | P1 | 识别 TCP 与 Unix-domain socket 形式的远程转发 |
+| FR-79 | Unix-domain socket 隧道 | P1 | 支持 LocalForward 本地/远端 socket 端点以及 RemoteForward 的本地 socket 目标 |
 
 **验收标准**
 - 粘贴含 `ProxyJump` 的配置后，生成的主机卡片代理模式为“跳板机”，且引用关系正确。
 - 含不支持 `ProxyCommand` 的条目导入后标记为“需手动配置”，不得自动改为直连。
+- `LocalForward`、`DynamicForward`、`RemoteForward` 与 streamlocal 规则在导入预览中逐条显示；格式错误的规则进入警告列表。
+- 关闭 SSH 会话后，客户端监听端口、本地 Unix socket 和服务端转发请求均清理。
+- 默认只监听 loopback；配置显式指定通配地址时才开放到所有接口。
 
 ---
 
@@ -410,6 +416,7 @@ HostShell
 | CF Service Token | 无浏览器弹窗直连成功；错误 Token 提示鉴权失败 |
 | CF Web SSO | WebView 登录后自动连接；Cookie 过期可重新登录 |
 | 配置导入 | `ProxyJump` 与 `cloudflared` 规则正确识别，不支持项不静默降级 |
+| SSH 隧道与 Socket | LocalForward / SOCKS5 DynamicForward / TCP 与 Unix socket RemoteForward 按规则转发，断开会话后监听和远端请求被清理 |
 | 移动键盘栏 | Esc/Tab/Ctrl/方向键/组合宏在 vim/tmux 中可用 |
 | 断线重连 | 断线提示明确，重连后历史保留 |
 | 安全 | 敏感信息不明文落盘；日志脱敏；应用锁可用 |

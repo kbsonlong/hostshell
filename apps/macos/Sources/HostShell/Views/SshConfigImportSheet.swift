@@ -91,6 +91,11 @@ public struct SshConfigImportSheet: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(h.name).fontWeight(.medium)
                                 Text("\(h.username)@\(h.hostname):\(h.port)").font(.caption).foregroundColor(.secondary)
+                                ForEach(h.port_forwards ?? []) { rule in
+                                    Label(rule.displayName, systemImage: "point.3.connected.trianglepath.dotted")
+                                        .font(.caption2)
+                                        .foregroundColor(.blue)
+                                }
                             }
                             Spacer()
                             Text(h.proxy_mode.badgeName)

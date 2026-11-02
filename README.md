@@ -35,6 +35,7 @@ hostshell/
 ## 核心特性
 
 - **多链路连接**：Direct / ProxyJump（多跳）/ Cloudflare Access 零信任 / ProxyCommand
+- **SSH 转发**：导入并运行 `LocalForward`、`RemoteForward`、`DynamicForward`（SOCKS5）和 Unix-domain socket 转发
 - **认证方式**：password、private key、ssh-agent（`SSH_AUTH_SOCK` 自动发现 + 存活探测）、saved key（`KeyRef` 安全引用）
 - **内建 ssh-agent**：`AppAgent` 提供策略可控的 in-app agent server（RequestKeys/Sign 默认放行，AddKeys 可关闭）
 - **ssh-config 导入**：解析 `~/.ssh/config`，自动物化 JumpHost 资产
@@ -89,6 +90,7 @@ cargo test -p hostshell-core
 
 ## 文档
 
+- `docs/development-guide.md` — 从 GitHub 克隆到 Rust/CLI、macOS、iOS 三路构建与回归验证的开发指南
 - `prd.md` — 产品需求文档（移动 SSH 与零信任连接终端）
 - `mobile_ssh_proxy_design.md` — 移动端代理链路技术设计
 - `REGRESSION.md` — 回归测试基线说明

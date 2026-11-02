@@ -283,6 +283,15 @@ pub extern "C" fn hostshell_import_ssh_config(engine: *mut EngineWrapper, config
 // --- Session Connection & PTY ---
 type StageCallback = extern "C" fn(event_json: *const c_char, user_data: *mut c_void);
 type OutputCallback = extern "C" fn(data: *const u8, len: usize, user_data: *mut c_void);
+type AuthInputCallback = extern "C" fn(
+    name: *const c_char,
+    instructions: *const c_char,
+    prompt: *const c_char,
+    echo: bool,
+    response: *mut c_char,
+    response_capacity: usize,
+    user_data: *mut c_void,
+) -> c_int;
 
 #[no_mangle]
 pub extern "C" fn hostshell_connect(
@@ -293,6 +302,31 @@ pub extern "C" fn hostshell_connect(
     auto_accept_new_keys: bool,
     stage_cb: Option<StageCallback>,
     output_cb: Option<OutputCallback>,
+    user_data: *mut c_void,
+) -> *mut SessionWrapper {
+    hostshell_connect_with_auth_input(
+        engine,
+        host_json,
+        cols,
+        rows,
+        auto_accept_new_keys,
+        stage_cb,
+        output_cb,
+        None,
+        user_data,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_connect_with_auth_input(
+    engine: *mut EngineWrapper,
+    host_json: *const c_char,
+    cols: u32,
+    rows: u32,
+    auto_accept_new_keys: bool,
+    stage_cb: Option<StageCallback>,
+    output_cb: Option<OutputCallback>,
+    auth_input_cb: Option<AuthInputCallback>,
     user_data: *mut c_void,
 ) -> *mut SessionWrapper {
     if engine.is_null() || host_json.is_null() {
@@ -331,9 +365,37 @@ pub extern "C" fn hostshell_connect(
     let known_hosts = eng.store.known_hosts_ref();
     let stored_hosts = eng.store.load_hosts().unwrap_or_default();
     let user_data_addr = user_data as usize;
+    let auth_input = auth_input_cb.map(|callback| {
+        move |name: &str, instructions: &str, prompt: &str, echo: bool| {
+            const RESPONSE_CAPACITY: usize = 4096;
+            let to_cstring = |value: &str| CString::new(value.replace('\0', ""))
+                .unwrap_or_else(|_| CString::default());
+            let name = to_cstring(name);
+            let instructions = to_cstring(instructions);
+            let prompt = to_cstring(prompt);
+            let mut response = vec![0u8; RESPONSE_CAPACITY];
+            let len = callback(
+                name.as_ptr(),
+                instructions.as_ptr(),
+                prompt.as_ptr(),
+                echo,
+                response.as_mut_ptr().cast(),
+                response.len(),
+                user_data_addr as *mut c_void,
+            );
+            if len == -1 {
+                return Err("用户取消了交互式认证".to_string());
+            }
+            if len < 0 || len as usize > response.len() {
+                return Err("交互式认证响应无效或超出长度限制".to_string());
+            }
+            String::from_utf8(response[..len as usize].to_vec())
+                .map_err(|_| "交互式认证响应不是有效 UTF-8".to_string())
+        }
+    });
 
     let result = eng.runtime.block_on(async {
-        SshSession::connect(
+        SshSession::connect_with_auth_input(
             host,
             selected_jump_hosts,
             stored_hosts,
@@ -341,6 +403,9 @@ pub extern "C" fn hostshell_connect(
             cols,
             rows,
             auto_accept_new_keys,
+            auth_input
+                .as_ref()
+                .map(|provider| provider as &crate::ssh::session::AuthInputProvider),
         )
         .await
     });

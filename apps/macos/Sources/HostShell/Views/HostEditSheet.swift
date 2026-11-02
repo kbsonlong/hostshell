@@ -21,6 +21,12 @@ public struct HostEditSheet: View {
     @State private var forwardAgent: Bool
     @State private var forwardAgentHostIds: [String]
     @State private var selectedJumpHostIds: [String]
+    @State private var portForwards: [PortForwardRule]
+    @State private var forwardDirection = "local"
+    @State private var forwardBind = "127.0.0.1:8080"
+    @State private var forwardTarget = "127.0.0.1:80"
+    @State private var editingForwardIndex: Int?
+    @State private var forwardError: String?
 
     @State private var cfAuthType: CloudflareAuthType
     @State private var cfClientId: String
@@ -75,6 +81,7 @@ public struct HostEditSheet: View {
         _forwardAgent = State(initialValue: host?.forward_agent ?? false)
         _forwardAgentHostIds = State(initialValue: host?.forward_agent_host_ids ?? [])
         _selectedJumpHostIds = State(initialValue: host?.jump_host_ids ?? [])
+        _portForwards = State(initialValue: host?.port_forwards ?? [])
 
         let cf = host?.cloudflare_config
         _cfAuthType = State(initialValue: cf?.auth_type ?? .serviceToken)
@@ -282,6 +289,66 @@ public struct HostEditSheet: View {
                         .padding(6)
                     }
 
+                    GroupBox(label: Label("SSH 隧道与 Socket 转发", systemImage: "point.3.connected.trianglepath.dotted")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if portForwards.isEmpty {
+                                Text("尚未配置转发规则。规则会在 SSH 会话建立后启动。")
+                                    .font(.caption).foregroundColor(.secondary)
+                            } else {
+                                ForEach(portForwards.indices, id: \.self) { index in
+                                    HStack(spacing: 8) {
+                                        Text(portForwards[index].displayName)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .textSelection(.enabled)
+                                        Spacer(minLength: 4)
+                                        Button("编辑") { editForward(at: index) }
+                                            .controlSize(.small)
+                                        Button(role: .destructive) {
+                                            portForwards.remove(at: index)
+                                            if editingForwardIndex != nil { resetForwardForm() }
+                                        } label: {
+                                            Image(systemName: "trash")
+                                        }
+                                        .controlSize(.small)
+                                        .help("删除转发规则")
+                                    }
+                                }
+                            }
+
+                            Divider()
+                            Picker("转发类型", selection: $forwardDirection) {
+                                Text("本地 TCP / Socket").tag("local")
+                                Text("SOCKS5 动态转发").tag("dynamic")
+                                Text("远程 TCP / Socket").tag("remote")
+                            }
+                            .pickerStyle(.segmented)
+
+                            TextField(bindEndpointTitle, text: $forwardBind)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            if forwardDirection != "dynamic" {
+                                TextField(targetEndpointTitle, text: $forwardTarget)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                            Text("TCP 示例：127.0.0.1:18085；Unix socket 示例：/tmp/hostshell.sock。端口转发目标写为 host:port。")
+                                .font(.caption).foregroundColor(.secondary)
+                            if let forwardError {
+                                Text(forwardError).font(.caption).foregroundColor(.red)
+                            }
+                            HStack {
+                                Button(editingForwardIndex == nil ? "添加转发规则" : "保存修改") {
+                                    saveForward()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                if editingForwardIndex != nil {
+                                    Button("取消编辑") { resetForwardForm() }
+                                }
+                            }
+                        }
+                        .padding(6)
+                    }
+
                     // Tags
                     GroupBox(label: Label("标签分类 (逗号分隔)", systemImage: "tag")) {
                         TextField("如: 生产, k8s, 香港机房", text: $tagInput)
@@ -323,6 +390,54 @@ public struct HostEditSheet: View {
                 forwardAgentHostIds.removeAll { $0 == id }
             }
         })
+    }
+
+    private var bindEndpointTitle: String {
+        switch forwardDirection {
+        case "remote": return "远端监听地址和端口，或远端 socket 路径"
+        case "dynamic": return "本地 SOCKS5 监听地址和端口"
+        default: return "本地监听地址和端口，或本地 socket 路径"
+        }
+    }
+
+    private var targetEndpointTitle: String {
+        forwardDirection == "remote"
+            ? "本地目标 host:port 或本地 socket 路径"
+            : "远端目标 host:port 或远端 socket 路径"
+    }
+
+    private func editForward(at index: Int) {
+        let rule = portForwards[index]
+        forwardDirection = rule.direction
+        forwardBind = rule.bind.configValue
+        forwardTarget = rule.target?.configValue ?? ""
+        editingForwardIndex = index
+        forwardError = nil
+    }
+
+    private func saveForward() {
+        guard let rule = PortForwardRule.parse(
+            direction: forwardDirection,
+            bind: forwardBind,
+            target: forwardTarget
+        ) else {
+            forwardError = "端点格式无效。TCP 使用 host:port，Unix socket 使用路径；端口需为 1–65535。"
+            return
+        }
+        if let index = editingForwardIndex, portForwards.indices.contains(index) {
+            portForwards[index] = rule
+        } else {
+            portForwards.append(rule)
+        }
+        resetForwardForm()
+    }
+
+    private func resetForwardForm() {
+        editingForwardIndex = nil
+        forwardDirection = "local"
+        forwardBind = "127.0.0.1:8080"
+        forwardTarget = "127.0.0.1:80"
+        forwardError = nil
     }
 
     private func openPrivateKeyFile() {
@@ -439,6 +554,7 @@ public struct HostEditSheet: View {
             jump_host_ids: proxyMode == .proxyJump ? selectedJumpHostIds : [],
             proxy_command: proxyMode == .proxyCommand && !proxyCommandText.isEmpty ? proxyCommandText : nil,
             cloudflare_config: cfConfig,
+            port_forwards: portForwards,
             tags: tags,
             last_connected_at: originalHost?.last_connected_at,
             created_at: originalHost?.created_at ?? UInt64(Date().timeIntervalSince1970),

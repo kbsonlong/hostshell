@@ -37,6 +37,16 @@ public struct HostCardView: View {
             HStack(spacing: 6) {
                 proxyBadge(for: host.proxy_mode)
 
+                if let forwards = host.port_forwards, !forwards.isEmpty {
+                    Label("\(forwards.count) 隧道", systemImage: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.cyan.opacity(0.12))
+                        .foregroundColor(.cyan)
+                        .cornerRadius(4)
+                }
+
                 if host.proxy_mode == .proxyJump && !host.jump_host_ids.isEmpty {
                     Text("\(host.jump_host_ids.count) 跳")
                         .font(.system(size: 10, weight: .medium))

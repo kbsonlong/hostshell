@@ -213,6 +213,7 @@ fn test_config_store_crud() {
         jump_host_ids: vec![],
         cloudflare_config: None,
         proxy_command: None,
+        port_forwards: None,
         tags: vec!["prod".to_string()],
         last_connected_at: None,
         created_at: 100,

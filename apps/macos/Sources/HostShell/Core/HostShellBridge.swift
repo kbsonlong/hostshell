@@ -44,9 +44,13 @@ func c_hostshell_import_ssh_config(_ engine: OpaquePointer?, _ configText: Unsaf
 
 typealias StageCallbackC = @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
 typealias OutputCallbackC = @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void
+typealias AuthInputCallbackC = @convention(c) (
+    UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Bool,
+    UnsafeMutablePointer<CChar>?, Int, UnsafeMutableRawPointer?
+) -> Int32
 
-@_silgen_name("hostshell_connect")
-func c_hostshell_connect(
+@_silgen_name("hostshell_connect_with_auth_input")
+func c_hostshell_connect_with_auth_input(
     _ engine: OpaquePointer?,
     _ hostJson: UnsafePointer<CChar>?,
     _ cols: UInt32,
@@ -54,6 +58,7 @@ func c_hostshell_connect(
     _ autoAcceptNewKeys: Bool,
     _ stageCb: StageCallbackC?,
     _ outputCb: OutputCallbackC?,
+    _ authInputCb: AuthInputCallbackC?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OpaquePointer?
 
@@ -219,7 +224,8 @@ public final class HostShellBridge: @unchecked Sendable {
         rows: UInt32 = 24,
         autoAcceptNewKeys: Bool = true,
         onStage: @escaping (String) -> Void,
-        onOutput: @escaping (Data) -> Void
+        onOutput: @escaping (Data) -> Void,
+        onAuthInput: @escaping (String, String, String, Bool) -> String?
     ) -> SessionHandleBridge? {
         guard let ptr = enginePtr else { return nil }
         let encoder = JSONEncoder()
@@ -230,13 +236,19 @@ public final class HostShellBridge: @unchecked Sendable {
         final class CallbackContext {
             let onStage: (String) -> Void
             let onOutput: (Data) -> Void
+            let onAuthInput: (String, String, String, Bool) -> String?
 
-            init(onStage: @escaping (String) -> Void, onOutput: @escaping (Data) -> Void) {
+            init(
+                onStage: @escaping (String) -> Void,
+                onOutput: @escaping (Data) -> Void,
+                onAuthInput: @escaping (String, String, String, Bool) -> String?
+            ) {
                 self.onStage = onStage
                 self.onOutput = onOutput
+                self.onAuthInput = onAuthInput
             }
         }
-        let ctx = CallbackContext(onStage: onStage, onOutput: onOutput)
+        let ctx = CallbackContext(onStage: onStage, onOutput: onOutput, onAuthInput: onAuthInput)
         let ctxPtr = Unmanaged.passRetained(ctx).toOpaque()
 
         let stageCb: StageCallbackC = { cJson, userPtr in
@@ -253,7 +265,25 @@ public final class HostShellBridge: @unchecked Sendable {
             box.onOutput(dataChunk)
         }
 
-        let sessPtr = c_hostshell_connect(
+        let authInputCb: AuthInputCallbackC = { cName, cInstructions, cPrompt, echo, responseBuffer, capacity, userPtr in
+            guard let cName, let cInstructions, let cPrompt,
+                  let responseBuffer, let userPtr, capacity >= 0 else { return -1 }
+            let box = Unmanaged<CallbackContext>.fromOpaque(userPtr).takeUnretainedValue()
+            guard let response = box.onAuthInput(
+                String(cString: cName),
+                String(cString: cInstructions),
+                String(cString: cPrompt),
+                echo
+            ) else { return -1 }
+            let bytes = Array(response.utf8)
+            guard bytes.count <= capacity else { return -2 }
+            for (index, byte) in bytes.enumerated() {
+                responseBuffer[index] = CChar(bitPattern: byte)
+            }
+            return Int32(bytes.count)
+        }
+
+        let sessPtr = c_hostshell_connect_with_auth_input(
             ptr,
             jsonStr,
             cols,
@@ -261,6 +291,7 @@ public final class HostShellBridge: @unchecked Sendable {
             autoAcceptNewKeys,
             stageCb,
             outputCb,
+            authInputCb,
             ctxPtr
         )
 

@@ -1,4 +1,4 @@
-use crate::model::host::{AuthMethod, CloudflareAuthType, CloudflareConfig, Host, JumpHost, ProxyMode};
+use crate::model::host::{AuthMethod, CloudflareAuthType, CloudflareConfig, ForwardEndpoint, Host, JumpHost, PortForwardRule, ProxyMode};
 
 fn expand_tilde(path: &str) -> String {
     if path.starts_with('~') {
@@ -14,6 +14,65 @@ pub struct ImportResult {
     pub hosts: Vec<Host>,
     pub jump_hosts: Vec<JumpHost>,
     pub warnings: Vec<String>,
+}
+
+fn parse_forward_endpoint(value: &str, default_address: &str, local_path: bool) -> Option<ForwardEndpoint> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let looks_like_socket = value.starts_with('/')
+        || value.starts_with('~')
+        || value.starts_with("./")
+        || (!value.contains(':') && value.parse::<u16>().is_err());
+    if looks_like_socket {
+        return Some(ForwardEndpoint {
+            endpoint_type: "streamlocal".into(),
+            address: None,
+            port: None,
+            path: Some(if local_path { expand_tilde(value) } else { value.to_string() }),
+        });
+    }
+
+    let (address, port) = if let Some(port) = value.strip_prefix('[').and_then(|v| v.split_once("]:")) {
+        (port.0.to_string(), port.1.parse::<u16>().ok()?)
+    } else if let Some((address, port)) = value.rsplit_once(':') {
+        if address.contains(':') && !address.starts_with('[') {
+            return None;
+        }
+        let address = address.trim_start_matches('[').trim_end_matches(']');
+        let address = if address == "*" { "0.0.0.0" } else { address };
+        (address.to_string(), port.parse::<u16>().ok()?)
+    } else {
+        (default_address.to_string(), value.parse::<u16>().ok()?)
+    };
+
+    Some(ForwardEndpoint {
+        endpoint_type: "tcp".into(),
+        address: Some(if address.is_empty() { default_address.into() } else { address }),
+        port: Some(port),
+        path: None,
+    })
+}
+
+fn parse_forward_rule(direction: &str, bind: &str, target: Option<&str>) -> Option<PortForwardRule> {
+    let default_address = "127.0.0.1";
+    let bind_endpoint = parse_forward_endpoint(bind, default_address, direction != "remote")?;
+    let target_endpoint = match target {
+        Some(value) => Some(parse_forward_endpoint(value, "127.0.0.1", direction == "remote")?),
+        None => None,
+    };
+    if direction != "dynamic" && target_endpoint.is_none() {
+        return None;
+    }
+    if direction == "dynamic" && bind_endpoint.endpoint_type != "tcp" {
+        return None;
+    }
+    Some(PortForwardRule {
+        direction: direction.to_string(),
+        bind: bind_endpoint,
+        target: target_endpoint,
+    })
 }
 
 pub fn parse_ssh_config(content: &str) -> ImportResult {
@@ -32,6 +91,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
     let mut proxy_jump: Option<String> = None;
     let mut proxy_command: Option<String> = None;
     let mut forward_agent = false;
+    let mut port_forwards: Vec<PortForwardRule> = Vec::new();
 
     let flush_host = |hosts: &mut Vec<Host>,
                       warnings: &mut Vec<String>,
@@ -42,7 +102,8 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                       id_file: Option<&str>,
                       p_jump: Option<&str>,
                       p_cmd: Option<&str>,
-                      forward: bool| {
+                      forward: bool,
+                      forwards: &[PortForwardRule]| {
         for name in names {
             if name == "*" || name.contains('?') || name.is_empty() {
                 continue;
@@ -122,6 +183,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                 jump_host_ids,
                 cloudflare_config: cf_config,
                 proxy_command: stored_proxy_command,
+                port_forwards: Some(forwards.to_vec()),
                 tags: vec!["imported".to_string()],
                 last_connected_at: None,
                 created_at: now,
@@ -153,6 +215,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                             proxy_jump.as_deref(),
                             proxy_command.as_deref(),
                             forward_agent,
+                            &port_forwards,
                         );
                     }
                     current_names = parts.map(|s| s.to_string()).collect();
@@ -163,6 +226,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                     proxy_jump = None;
                     proxy_command = None;
                     forward_agent = false;
+                    port_forwards.clear();
                 }
                 "hostname" => {
                     if let Some(val) = parts.next() {
@@ -197,6 +261,26 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                 "forwardagent" => {
                     forward_agent = parts.next().is_some_and(|value| value.eq_ignore_ascii_case("yes"));
                 }
+                "localforward" | "remoteforward" | "dynamicforward" => {
+                    let bind = parts.next();
+                    let target = parts.next();
+                    let direction = match key_lower.as_str() {
+                        "localforward" => "local",
+                        "remoteforward" => "remote",
+                        _ => "dynamic",
+                    };
+                    match bind.and_then(|bind| {
+                        let target = if direction == "dynamic" { None } else { target };
+                        parse_forward_rule(direction, bind, target)
+                    }) {
+                        Some(rule) => port_forwards.push(rule),
+                        None => warnings.push(format!(
+                            "Host '{}': unsupported or malformed {} rule; it was not imported.",
+                            current_names.first().map(String::as_str).unwrap_or("(unknown)"),
+                            key
+                        )),
+                    }
+                }
                 _ => {}
             }
         }
@@ -214,6 +298,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
             proxy_jump.as_deref(),
             proxy_command.as_deref(),
             forward_agent,
+            &port_forwards,
         );
     }
 
