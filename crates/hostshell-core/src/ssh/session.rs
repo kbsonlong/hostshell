@@ -614,30 +614,46 @@ impl SshSession {
             method: auth_desc.to_string(),
         }));
 
-        let mut auth_res = match &host.auth {
-            AuthMethod::Password(pwd) => handle.authenticate_password(&host.username, pwd).await,
-            AuthMethod::PrivateKey { key_data, passphrase } => {
-                let decoded = load_private_key(key_data, passphrase.as_deref(), &host.username)?;
-                authenticate_with_private_key(&mut handle, &host.username, decoded).await
-            }
-            AuthMethod::Agent => {
-                match authenticate_with_agent(&mut handle, &host.username).await {
-                    Ok(res) => Ok(res),
-                    Err(reason) => {
-                        let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
-                            failed_stage: "AuthenticatingUser".to_string(),
-                            error_category: "AuthError".to_string(),
-                            message: reason.clone(),
-                            suggestion: "启动 ssh-agent 并用 ssh-add 加载密钥后再试.".into(),
-                        }));
-                        return Err(HostShellError::AuthenticationFailed {
-                            user: host.username.clone(),
-                            reason,
-                        });
-                    }
+        let auth_future = async {
+            match &host.auth {
+                AuthMethod::Password(pwd) => {
+                    Ok(handle.authenticate_password(&host.username, pwd).await)
                 }
+                AuthMethod::PrivateKey {
+                    key_data,
+                    passphrase,
+                } => {
+                    let decoded =
+                        load_private_key(key_data, passphrase.as_deref(), &host.username)?;
+                    Ok(authenticate_with_private_key(&mut handle, &host.username, decoded).await)
+                }
+                AuthMethod::Agent => authenticate_with_agent(&mut handle, &host.username)
+                    .await
+                    .map(Ok)
+                    .map_err(|reason| HostShellError::AuthenticationFailed {
+                        user: host.username.clone(),
+                        reason,
+                    }),
+                AuthMethod::KeyRef { .. } => unreachable!(),
             }
-            AuthMethod::KeyRef { .. } => unreachable!(),
+        };
+        let mut auth_res = match timeout(connect_timeout, auth_future).await {
+            Err(_) => {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "AuthenticatingUser".to_string(),
+                    error_category: "Timeout".to_string(),
+                    message: "User authentication timed out".to_string(),
+                    suggestion:
+                        "Check server responsiveness and authentication configuration, then retry."
+                            .to_string(),
+                }));
+                return Err(HostShellError::AuthenticationFailed {
+                    user: host.username.clone(),
+                    reason: "Authentication timed out".to_string(),
+                });
+            }
+            Ok(Err(error)) => return Err(error),
+            Ok(Ok(result)) => result,
         };
 
         // Fallback: server only offers keyboard-interactive (PAM/MFA bastions).
@@ -647,9 +663,27 @@ impl SshSession {
                     username: host.username.clone(),
                     method: "keyboard-interactive".to_string(),
                 }));
-                auth_res = match authenticate_keyboard_interactive(&mut handle, &host.username, auth_input).await {
-                    Ok(res) => Ok(res),
-                    Err(reason) => {
+                auth_res = match timeout(
+                    connect_timeout,
+                    authenticate_keyboard_interactive(&mut handle, &host.username, auth_input),
+                )
+                .await
+                {
+                    Err(_) => {
+                        let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                            failed_stage: "AuthenticatingUser".to_string(),
+                            error_category: "Timeout".to_string(),
+                            message: "Keyboard-interactive authentication timed out".to_string(),
+                            suggestion: "Complete the authentication prompt promptly, then retry."
+                                .to_string(),
+                        }));
+                        return Err(HostShellError::AuthenticationFailed {
+                            user: host.username.clone(),
+                            reason: "Keyboard-interactive authentication timed out".to_string(),
+                        });
+                    }
+                    Ok(Ok(res)) => Ok(res),
+                    Ok(Err(reason)) => {
                         let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
                             failed_stage: "AuthenticatingUser".to_string(),
                             error_category: "AuthError".to_string(),
@@ -705,10 +739,21 @@ impl SshSession {
         // 4. Open PTY and Shell Channel
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::OpeningPty));
 
-        let mut channel = handle
-            .channel_open_session()
+        let mut channel = timeout(connect_timeout, handle.channel_open_session())
             .await
-            .map_err(|e| HostShellError::Session(format!("Failed to open session channel: {}", e)))?;
+            .map_err(|_| {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "OpeningPty".to_string(),
+                    error_category: "Timeout".to_string(),
+                    message: "Opening SSH session channel timed out".to_string(),
+                    suggestion: "Check server responsiveness and session limits, then retry."
+                        .to_string(),
+                }));
+                HostShellError::Session("Opening SSH session channel timed out".to_string())
+            })?
+            .map_err(|e| {
+                HostShellError::Session(format!("Failed to open session channel: {}", e))
+            })?;
 
         if host.forward_agent {
             channel.agent_forward(true).await.map_err(|e| HostShellError::Session(format!("SSH Agent 转发请求失败: {e}")))?;
@@ -719,15 +764,24 @@ impl SshSession {
             }
         }
 
-        channel
-            .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+        let pty_and_shell = async {
+            channel
+                .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+                .await?;
+            channel.request_shell(false).await
+        };
+        timeout(connect_timeout, pty_and_shell)
             .await
-            .map_err(|e| HostShellError::Session(format!("PTY request failed: {}", e)))?;
-
-        channel
-            .request_shell(false)
-            .await
-            .map_err(|e| HostShellError::Session(format!("Shell request failed: {}", e)))?;
+            .map_err(|_| {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "OpeningPty".to_string(),
+                    error_category: "Timeout".to_string(),
+                    message: "PTY or shell request timed out".to_string(),
+                    suggestion: "Check server shell/session policy and retry.".to_string(),
+                }));
+                HostShellError::Session("PTY or shell request timed out".to_string())
+            })?
+            .map_err(|e| HostShellError::Session(format!("PTY or shell request failed: {}", e)))?;
 
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::Connected {
             target: host.name.clone(),
