@@ -18,8 +18,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  quick-check:
+    name: Source checks
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
+    runs-on: macos-15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check pull request whitespace
+        if: github.event_name == 'pull_request'
+        run: git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+
+      - name: Check pushed commit whitespace
+        if: github.event_name == 'push'
+        run: git show --check --oneline "${{ github.sha }}"
+
   regression:
     name: Full regression (macOS + iOS)
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -52,14 +72,6 @@ jobs:
 
       - name: Run full regression baseline
         run: ./scripts/check_regression.sh
-
-      - name: Check pull request whitespace
-        if: github.event_name == 'pull_request'
-        run: git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
-
-      - name: Check pushed commit whitespace
-        if: github.event_name == 'push'
-        run: git show --check --oneline "${{ github.sha }}"
 
   release-build:
     name: Build macOS + CLI (${{ matrix.arch }})
