@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "status", content = "details", rename_all = "snake_case")]
 pub enum ConnectionStage {
     Initializing,
-    
+
     // Direct or proxy transport stages
     ConnectingTransport {
         target: String,
         description: String,
     },
-    
+
     // ProxyJump Bastion stages
     BastionConnecting {
         hop: usize,

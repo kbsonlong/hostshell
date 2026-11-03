@@ -304,4 +304,3 @@ fn socket_path(endpoint: &ForwardEndpoint) -> Result<PathBuf> {
 fn to_io_error(error: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::ConnectionAborted, error.to_string())
 }
-
