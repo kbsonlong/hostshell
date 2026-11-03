@@ -42,6 +42,16 @@ hostshell/
 - **连接阶段可视化**：`ConnectionStage` 分阶段上报，失败可定位层级
 - **跨端复用**：同一 Rust 内核同时驱动 CLI、macOS、iOS
 
+## 下载
+
+推送 `v*` 版本标签后，GitHub Actions 会先通过完整回归，再构建 macOS App 与 CLI 并附加到对应的 GitHub Release。
+
+- [所有版本与下载资源](https://github.com/kbsonlong/hostshell/releases)
+- [最新 macOS App（ZIP）](https://github.com/kbsonlong/hostshell/releases/latest/download/HostShell-macos.zip)
+- [最新 macOS CLI（tar.gz）](https://github.com/kbsonlong/hostshell/releases/latest/download/hostshell-cli-macos.tar.gz)
+
+每个版本的 Release 页面也提供 `BUILD-INFO.txt` 与 `SHA256SUMS`。版本固定下载地址格式为 `https://github.com/kbsonlong/hostshell/releases/download/<版本标签>/<资源文件名>`。
+
 ## 快速开始
 
 ### CLI

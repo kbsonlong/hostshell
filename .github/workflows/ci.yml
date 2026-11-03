@@ -53,3 +53,54 @@ jobs:
       - name: Check pushed commit whitespace
         if: github.event_name == 'push'
         run: git show --check --oneline "${{ github.sha }}"
+
+  release:
+    name: Build and publish macOS app + CLI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: regression
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prefer rustup toolchain for Cargo commands
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build CLI
+        run: ./scripts/build_cli.sh
+
+      - name: Build macOS app
+        run: ./scripts/build_macos.sh
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent target/HostShell.app dist/HostShell-macos.zip
+          tar -C target/release -czf dist/hostshell-cli-macos.tar.gz hostshell-cli
+          printf 'version=%s\narchitecture=%s\n' "${GITHUB_REF_NAME#v}" "$(uname -m)" > dist/BUILD-INFO.txt
+          shasum -a 256 dist/HostShell-macos.zip dist/hostshell-cli-macos.tar.gz dist/BUILD-INFO.txt > dist/SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          dist/HostShell-macos.zip
+          dist/hostshell-cli-macos.tar.gz
+          dist/BUILD-INFO.txt
+          dist/SHA256SUMS
+          --title "HostShell ${GITHUB_REF_NAME}"
+          --generate-notes
+          --verify-tag
