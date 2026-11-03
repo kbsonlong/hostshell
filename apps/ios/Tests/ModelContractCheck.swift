@@ -81,6 +81,22 @@ enum IOSModelContractCheck {
         let terminalSettings = connectObject["terminal_settings"] as! [String: Any]
         precondition(terminalSettings["term_type"] as? String == "tmux-256color")
         precondition(terminalSettings["keepalive_seconds"] as? Int == 5)
+        let modelsURL = try AIProviderSettings.endpoint(
+            baseURL: "https://ai.example.test/v1/",
+            path: "/models"
+        )
+        precondition(modelsURL.absoluteString == "https://ai.example.test/v1/models")
+        let localModelsURL = try AIProviderSettings.endpoint(
+            baseURL: "http://localhost:1234/v1",
+            path: "models"
+        )
+        precondition(localModelsURL.absoluteString == "http://localhost:1234/v1/models")
+        do {
+            _ = try AIProviderSettings.endpoint(baseURL: "http://ai.example.test/v1", path: "models")
+            preconditionFailure("Non-loopback HTTP providers must be rejected")
+        } catch AIProviderError.invalidBaseURL {
+            // Expected: remote provider endpoints must use HTTPS.
+        }
         print("iOS wire model + terminal settings contract OK")
     }
 }

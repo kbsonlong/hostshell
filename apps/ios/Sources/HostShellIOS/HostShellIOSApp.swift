@@ -1169,6 +1169,13 @@ private struct IOSTerminalSettingsSheet: View {
     @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
     @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
     @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
+    @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
+    @AppStorage(AIProviderSettings.baseURLKey) private var aiBaseURL = AIProviderSettings.defaultBaseURL
+    @AppStorage(AIProviderSettings.modelKey) private var aiModel = ""
+    @State private var aiAPIKey = ""
+    @State private var aiModels: [String] = []
+    @State private var aiStatus: String?
+    @State private var refreshingAIModels = false
 
     var body: some View {
         NavigationStack {
@@ -1234,9 +1241,55 @@ private struct IOSTerminalSettingsSheet: View {
                         Toggle(shortcut.title, isOn: shortcutBinding(for: shortcut))
                     }
                 }
+
+                Section("AI 助手") {
+                    Toggle("启用 AI 助手", isOn: $aiEnabled)
+                    Text("使用 OpenAI 兼容接口。终端内容不会自动发送；会话内对话和上下文预览随后接入。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    TextField("API 地址", text: $aiBaseURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    SecureField("API Key", text: $aiAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("安全保存 API Key") {
+                        saveAIKey()
+                    }
+                    TextField("模型 ID", text: $aiModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !aiModels.isEmpty {
+                        Picker("可用模型", selection: $aiModel) {
+                            ForEach(aiModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                    }
+                    Button {
+                        Task { await refreshAIModels() }
+                    } label: {
+                        HStack {
+                            Text("刷新模型列表")
+                            if refreshingAIModels { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(refreshingAIModels)
+                    if let aiStatus {
+                        Text(aiStatus)
+                            .font(.footnote)
+                            .foregroundStyle(aiStatus.hasPrefix("已") ? .green : .secondary)
+                            .textSelection(.enabled)
+                    }
+                    Text("API Key 使用 iOS Keychain 保存；地址和模型 ID 保存在本机设置中。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("终端设置")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { aiAPIKey = AIProviderKeychain.loadAPIKey() ?? "" }
         }
     }
 
@@ -1260,6 +1313,30 @@ private struct IOSTerminalSettingsSheet: View {
 
     private var selectedShortcutIDs: Set<String> {
         Set(accessoryShortcutIDs.split(separator: ",").map(String.init))
+    }
+
+    private func saveAIKey() {
+        do {
+            try AIProviderKeychain.saveAPIKey(aiAPIKey)
+            aiStatus = "已安全保存 API Key。"
+        } catch {
+            aiStatus = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func refreshAIModels() async {
+        refreshingAIModels = true
+        defer { refreshingAIModels = false }
+        do {
+            try AIProviderKeychain.saveAPIKey(aiAPIKey)
+            let client = OpenAICompatibleProviderClient(baseURL: aiBaseURL, apiKey: aiAPIKey)
+            aiModels = try await client.listModels()
+            if !aiModels.contains(aiModel) { aiModel = aiModels[0] }
+            aiStatus = "已刷新 \(aiModels.count) 个模型。"
+        } catch {
+            aiStatus = error.localizedDescription
+        }
     }
 }
 
