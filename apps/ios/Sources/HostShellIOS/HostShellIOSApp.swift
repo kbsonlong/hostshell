@@ -953,6 +953,7 @@ struct HostSessionScreen: View {
     @State private var connectionNotice: String?
     @State private var showingTerminalSettings = false
     @State private var showingStageDetails = false
+    @State private var showingAIAssistant = false
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -961,6 +962,7 @@ struct HostSessionScreen: View {
     @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
     @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
     @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
+    @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -975,6 +977,13 @@ struct HostSessionScreen: View {
                 }
                 .font(.caption)
                 .accessibilityLabel("终端设置")
+                if aiEnabled {
+                    Button { showingAIAssistant = true } label: {
+                        Image(systemName: "sparkles")
+                    }
+                    .font(.caption)
+                    .accessibilityLabel("AI 助手")
+                }
                 if connected || connecting {
                     Button(connecting ? "取消" : "断开") {
                         terminal.cancelConnect()
@@ -1028,6 +1037,9 @@ struct HostSessionScreen: View {
         .sheet(isPresented: $showingTerminalSettings) {
             IOSTerminalSettingsSheet()
         }
+        .sheet(isPresented: $showingAIAssistant) {
+            AIAssistantView(terminalOutput: terminal.recentOutputText)
+        }
         .task(id: connectionAttempt) {
             let attemptID = connectionAttempt
             let preferences = terminalPreferences
@@ -1055,6 +1067,7 @@ struct HostSessionScreen: View {
                 }, onOutput: { data in
                     DispatchQueue.main.async {
                         guard connectionAttempt == attemptID else { return }
+                        terminal.recordOutput(data)
                         terminal.output?(data)
                     }
                 }, onAuthInput: { name, instructions, prompt, echo in
@@ -1394,6 +1407,7 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
 
 @MainActor
 final class TerminalModel: ObservableObject {
+    private static let recentOutputLimit = 16 * 1024
     var session: Session?
     var connectCancellation: IOSConnectCancellation?
     private var connectionCancelled = false
@@ -1401,6 +1415,18 @@ final class TerminalModel: ObservableObject {
     var input: (([UInt8]) -> Void)?
     @Published var authPromptInfo: IOSAuthPromptInfo?
     private var authPromptWaiter: IOSAuthPromptWaiter?
+    private var recentOutput = Data()
+
+    var recentOutputText: String {
+        String(decoding: recentOutput, as: UTF8.self)
+    }
+
+    func recordOutput(_ data: Data) {
+        recentOutput.append(data)
+        if recentOutput.count > Self.recentOutputLimit {
+            recentOutput = Data(recentOutput.suffix(Self.recentOutputLimit))
+        }
+    }
 
     func beginConnect(_ cancellation: IOSConnectCancellation) {
         if connectionCancelled {

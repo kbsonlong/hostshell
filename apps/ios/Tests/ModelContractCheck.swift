@@ -91,6 +91,18 @@ enum IOSModelContractCheck {
             path: "models"
         )
         precondition(localModelsURL.absoluteString == "http://localhost:1234/v1/models")
+        let client = OpenAICompatibleProviderClient(baseURL: "https://ai.example.test/v1", apiKey: "contract-test-key")
+        let completionRequest = try client.makeChatCompletionRequest(
+            model: "example-model",
+            messages: [AIChatMessage(role: "user", content: "explain this error")]
+        )
+        precondition(completionRequest.url?.absoluteString == "https://ai.example.test/v1/chat/completions")
+        precondition(completionRequest.httpMethod == "POST")
+        precondition(completionRequest.value(forHTTPHeaderField: "Authorization") == "Bearer contract-test-key")
+        let completionBody = try JSONSerialization.jsonObject(with: completionRequest.httpBody!) as! [String: Any]
+        precondition(completionBody["model"] as? String == "example-model")
+        let completionMessages = completionBody["messages"] as! [[String: String]]
+        precondition(completionMessages.first?["content"] == "explain this error")
         do {
             _ = try AIProviderSettings.endpoint(baseURL: "http://ai.example.test/v1", path: "models")
             preconditionFailure("Non-loopback HTTP providers must be rejected")
