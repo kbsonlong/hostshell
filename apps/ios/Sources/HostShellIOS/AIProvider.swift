@@ -65,6 +65,9 @@ enum AIProviderError: LocalizedError {
     case emptyModel
     case emptyMessages
     case emptyCompletion
+    case contextTooLong
+    case requestTimedOut
+    case networkUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -84,6 +87,12 @@ enum AIProviderError: LocalizedError {
             return "请输入要咨询的问题。"
         case .emptyCompletion:
             return "模型没有返回可显示的回答。"
+        case .contextTooLong:
+            return "当前对话内容超过 64 KiB 上限。请关闭 AI 助手并重新开始对话。"
+        case .requestTimedOut:
+            return "AI 请求超时。请检查网络后重试。"
+        case .networkUnavailable:
+            return "无法连接 AI 服务。请检查网络和服务地址后重试。"
         }
     }
 }
@@ -148,6 +157,7 @@ private struct OpenAICompatibleModelsResponse: Decodable {
 }
 
 struct OpenAICompatibleProviderClient {
+    private static let maximumRequestBodyBytes = 64 * 1024
     let baseURL: String
     let apiKey: String
 
@@ -190,13 +200,30 @@ struct OpenAICompatibleProviderClient {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONEncoder().encode(ChatCompletionRequest(model: model, messages: messages))
+        let body = try JSONEncoder().encode(ChatCompletionRequest(model: model, messages: messages))
+        guard body.count <= Self.maximumRequestBodyBytes else {
+            throw AIProviderError.contextTooLong
+        }
+        request.httpBody = body
         return request
     }
 
     func complete(model: String, messages: [AIChatMessage]) async throws -> String {
         let request = try makeChatCompletionRequest(model: model, messages: messages)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw AIProviderError.requestTimedOut
+        } catch let error as URLError where [
+            .notConnectedToInternet,
+            .networkConnectionLost,
+            .cannotConnectToHost,
+            .dnsLookupFailed
+        ].contains(error.code) {
+            throw AIProviderError.networkUnavailable
+        }
         guard let response = response as? HTTPURLResponse else { throw AIProviderError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
             throw AIProviderError.httpStatus(response.statusCode)

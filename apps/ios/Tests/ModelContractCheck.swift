@@ -103,6 +103,15 @@ enum IOSModelContractCheck {
         precondition(completionBody["model"] as? String == "example-model")
         let completionMessages = completionBody["messages"] as! [[String: String]]
         precondition(completionMessages.first?["content"] == "explain this error")
+        do {
+            _ = try client.makeChatCompletionRequest(
+                model: "example-model",
+                messages: [AIChatMessage(role: "user", content: String(repeating: "x", count: 70_000))]
+            )
+            preconditionFailure("Oversized AI requests must be rejected")
+        } catch AIProviderError.contextTooLong {
+            // Expected: request bodies are capped to keep conversation context bounded.
+        }
         let privateKeyStart = ["-----BEGIN OPENSSH ", "PRIVATE KEY-----"].joined()
         let privateKeyFixture = [
             privateKeyStart,
