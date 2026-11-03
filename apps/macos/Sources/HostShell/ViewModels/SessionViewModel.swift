@@ -56,6 +56,7 @@ private final class AuthPromptWaiter {
 
 @MainActor
 public final class SessionViewModel: ObservableObject {
+    private static let recentOutputLimit = 16 * 1024
     public let host: Host
     private let bridge = HostShellBridge.shared
     private var sessionBridge: SessionHandleBridge?
@@ -76,8 +77,13 @@ public final class SessionViewModel: ObservableObject {
 
     /// Raw byte chunks pending for the terminal emulator (SwiftTerm drains this).
     private var pendingOutput = Data()
+    private var recentOutput = Data()
     /// Bumped on every output chunk so SwiftUI re-renders and drains the buffer.
     @Published public var outputRevision: Int = 0
+
+    public var recentTerminalOutputText: String {
+        String(decoding: recentOutput, as: UTF8.self)
+    }
 
     /// Drain accumulated raw output bytes for the terminal emulator.
     public func takePendingOutput() -> Data? {
@@ -249,6 +255,10 @@ public final class SessionViewModel: ObservableObject {
 
     private func handleRawOutput(_ data: Data) {
         pendingOutput.append(data)
+        recentOutput.append(data)
+        if recentOutput.count > Self.recentOutputLimit {
+            recentOutput = Data(recentOutput.suffix(Self.recentOutputLimit))
+        }
         outputRevision += 1
     }
 

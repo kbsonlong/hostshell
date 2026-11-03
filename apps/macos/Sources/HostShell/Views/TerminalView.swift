@@ -132,6 +132,8 @@ struct SwiftTermRepresentable: NSViewRepresentable {
 
 public struct TerminalView: View {
     @ObservedObject var sessionVM: SessionViewModel
+    @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
+    @State private var showingAIAssistant = false
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -165,6 +167,16 @@ public struct TerminalView: View {
 
                 Spacer()
 
+                if aiEnabled {
+                    Button {
+                        showingAIAssistant = true
+                    } label: {
+                        Label("AI 助手", systemImage: "sparkles")
+                    }
+                    .controlSize(.small)
+                    .help("分析终端问题；不会执行命令")
+                }
+
                 if sessionVM.isDisconnected {
                     Button("重连") {
                         sessionVM.connect()
@@ -188,6 +200,10 @@ public struct TerminalView: View {
             // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
             SwiftTermRepresentable(sessionVM: sessionVM, preferences: terminalPreferences)
                 .ignoresSafeArea(edges: .bottom)
+        }
+        .sheet(isPresented: $showingAIAssistant) {
+            AIAssistantView(terminalOutput: sessionVM.recentTerminalOutputText)
+                .frame(minWidth: 560, minHeight: 500)
         }
     }
 
