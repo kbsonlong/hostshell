@@ -10,8 +10,6 @@ public struct SettingsView: View {
     @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
     @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
 
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
-
     private var fontSizeBinding: Binding<Double> {
         Binding(
             get: { terminalFontSize },
@@ -34,30 +32,70 @@ public struct SettingsView: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("设置与诊断")
-                        .font(.largeTitle.weight(.bold))
-                    Text("调整终端显示、连接行为，并查看本机诊断信息。设置会自动保存在此 Mac。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.bottom, 2)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("设置")
+                    .font(.largeTitle.weight(.bold))
+                Text("按类别调整 HostShell。设置会自动保存在此 Mac。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+            TabView {
+                settingsScroll {
                     appearanceSection
                     sessionSection
+                }
+                .tabItem { Label("终端", systemImage: "textformat") }
+
+                settingsScroll {
+                    aiSection
+                }
+                .tabItem { Label("AI 助手", systemImage: "sparkles") }
+
+                settingsScroll {
                     securitySection
                     featuresSection
                     logSection
+                }
+                .tabItem { Label("连接与诊断", systemImage: "network.badge.shield.half.filled") }
+
+                settingsScroll {
                     aboutSection
                 }
+                .tabItem { Label("版本信息", systemImage: "info.circle") }
             }
-            .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func settingsScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16, content: content)
+                .frame(maxWidth: 760, alignment: .leading)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var aiSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("macOS AI 助手尚未接入", systemImage: "sparkles")
+                    .font(.headline)
+                Text("当前只读 AI 助手和服务配置可在 iOS 端使用。macOS 版本接入后，服务地址、模型和安全凭据会集中放在此分类。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+        } label: {
+            Label("AI 助手", systemImage: "sparkles")
+                .font(.headline)
         }
     }
 
