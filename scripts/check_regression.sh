@@ -48,6 +48,7 @@ else
   step "iOS simulator app build"
   xcodebuild -project "$ROOT/apps/ios/HostShellIOS.xcodeproj" \
     -scheme HostShellIOS \
+    -skipPackagePluginValidation \
     -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
     -derivedDataPath "$ROOT/apps/ios/.build/regression" \
     build CODE_SIGNING_ALLOWED=NO

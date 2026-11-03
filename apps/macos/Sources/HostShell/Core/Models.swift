@@ -14,17 +14,121 @@ public enum TerminalTheme: String, Codable, CaseIterable, Identifiable, Sendable
     }
 }
 
+public enum TerminalFontFamily: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system, menlo, sfMono, jetBrainsMono
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .system: return "系统等宽"
+        case .menlo: return "Menlo"
+        case .sfMono: return "SF Mono"
+        case .jetBrainsMono: return "JetBrains Mono（可选安装）"
+        }
+    }
+
+    public var postScriptName: String? {
+        switch self {
+        case .system: return nil
+        case .menlo: return "Menlo-Regular"
+        case .sfMono: return "SFMono-Regular"
+        case .jetBrainsMono: return "JetBrainsMono-Regular"
+        }
+    }
+}
+
+public enum TerminalCursorStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    case block, underline, bar
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .block: return "方块"
+        case .underline: return "下划线"
+        case .bar: return "竖线"
+        }
+    }
+}
+
+public enum TerminalEmulation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case xterm256color = "xterm-256color"
+    case xterm
+    case screen
+    case tmux256color = "tmux-256color"
+
+    public var id: String { rawValue }
+}
+
 public struct TerminalPreferences: Codable, Equatable, Sendable {
     public static let fontSizeKey = "terminal.fontSize"
+    public static let fontFamilyKey = "terminal.fontFamily"
     public static let themeKey = "terminal.theme"
+    public static let cursorStyleKey = "terminal.cursorStyle"
+    public static let emulationKey = "terminal.emulation"
+    public static let scrollbackLinesKey = "terminal.scrollbackLines"
+    public static let keepaliveSecondsKey = "terminal.keepaliveSeconds"
     public static let defaultFontSize = 14.0
+    public static let defaultScrollbackLines = 1_000
+    public static let defaultKeepaliveSeconds = 30
 
     public var fontSize: Double
+    public var fontFamily: TerminalFontFamily
     public var theme: TerminalTheme
+    public var cursorStyle: TerminalCursorStyle
+    public var emulation: TerminalEmulation
+    public var scrollbackLines: Int
+    public var keepaliveSeconds: Int
 
-    public init(fontSize: Double = Self.defaultFontSize, theme: TerminalTheme = .dark) {
+    public init(
+        fontSize: Double = Self.defaultFontSize,
+        fontFamily: TerminalFontFamily = .system,
+        theme: TerminalTheme = .dark,
+        cursorStyle: TerminalCursorStyle = .block,
+        emulation: TerminalEmulation = .xterm256color,
+        scrollbackLines: Int = Self.defaultScrollbackLines,
+        keepaliveSeconds: Int = Self.defaultKeepaliveSeconds
+    ) {
         self.fontSize = min(max(fontSize, 10), 24)
+        self.fontFamily = fontFamily
         self.theme = theme
+        self.cursorStyle = cursorStyle
+        self.emulation = emulation
+        self.scrollbackLines = min(max(scrollbackLines, 100), 10_000)
+        self.keepaliveSeconds = keepaliveSeconds == 0 ? 0 : min(max(keepaliveSeconds, 5), 120)
+    }
+
+    public static func load(from defaults: UserDefaults = .standard) -> TerminalPreferences {
+        let fontSize = defaults.object(forKey: fontSizeKey) as? Double ?? defaultFontSize
+        let fontFamily = TerminalFontFamily(rawValue: defaults.string(forKey: fontFamilyKey) ?? "") ?? .system
+        let theme = TerminalTheme(rawValue: defaults.string(forKey: themeKey) ?? "") ?? .dark
+        let cursorStyle = TerminalCursorStyle(rawValue: defaults.string(forKey: cursorStyleKey) ?? "") ?? .block
+        let emulation = TerminalEmulation(rawValue: defaults.string(forKey: emulationKey) ?? "") ?? .xterm256color
+        let scrollbackLines = defaults.object(forKey: scrollbackLinesKey) as? Int ?? defaultScrollbackLines
+        let keepaliveSeconds = defaults.object(forKey: keepaliveSecondsKey) as? Int ?? defaultKeepaliveSeconds
+        return TerminalPreferences(
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            theme: theme,
+            cursorStyle: cursorStyle,
+            emulation: emulation,
+            scrollbackLines: scrollbackLines,
+            keepaliveSeconds: keepaliveSeconds
+        )
+    }
+
+    public func connectPayload(from encodedHost: Data) throws -> String {
+        guard var object = try JSONSerialization.jsonObject(with: encodedHost) as? [String: Any] else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        object["terminal_settings"] = [
+            "term_type": emulation.rawValue,
+            "keepalive_seconds": keepaliveSeconds
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard let json = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+        return json
     }
 }
 

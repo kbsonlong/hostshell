@@ -3,7 +3,12 @@ import SwiftUI
 public struct SettingsView: View {
     @ObservedObject var appVM: AppViewModel
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage(TerminalPreferences.cursorStyleKey) private var terminalCursorStyle = TerminalCursorStyle.block.rawValue
+    @AppStorage(TerminalPreferences.emulationKey) private var terminalEmulation = TerminalEmulation.xterm256color.rawValue
+    @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
+    @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
 
     public var body: some View {
         ScrollView {
@@ -21,12 +26,52 @@ public struct SettingsView: View {
                         }
                         Slider(value: $terminalFontSize, in: 10...24, step: 1)
                             .accessibilityLabel("终端字体大小")
+                        Picker("等宽字体", selection: $terminalFontFamily) {
+                            ForEach(TerminalFontFamily.allCases) { font in
+                                Text(font.displayName).tag(font.rawValue)
+                            }
+                        }
                         Picker("配色主题", selection: $terminalTheme) {
                             ForEach(TerminalTheme.allCases) { theme in
                                 Text(theme.displayName).tag(theme.rawValue)
                             }
                         }
                         .pickerStyle(.segmented)
+                        Picker("光标样式", selection: $terminalCursorStyle) {
+                            ForEach(TerminalCursorStyle.allCases) { style in
+                                Text(style.displayName).tag(style.rawValue)
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(label: Label("会话参数", systemImage: "slider.horizontal.3")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("终端仿真", selection: $terminalEmulation) {
+                            ForEach(TerminalEmulation.allCases) { type in
+                                Text(type.rawValue).tag(type.rawValue)
+                            }
+                        }
+                        HStack {
+                            Stepper(value: $terminalScrollbackLines, in: 100...10_000, step: 100) {
+                                Text("滚动缓冲区")
+                            }
+                            Spacer()
+                            Text("\(terminalScrollbackLines) 行").foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        HStack {
+                            Stepper(value: $terminalKeepaliveSeconds, in: 0...120, step: 5) {
+                                Text("SSH 心跳")
+                            }
+                            Spacer()
+                            Text(terminalKeepaliveSeconds == 0 ? "关闭" : "\(terminalKeepaliveSeconds) 秒")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Text("心跳范围：关闭或 5–120 秒。滚动缓冲区范围：100–10,000 行。终端仿真和心跳在下次连接时生效。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(6)
                 }

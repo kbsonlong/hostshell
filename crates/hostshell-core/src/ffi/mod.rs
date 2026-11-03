@@ -395,8 +395,23 @@ pub extern "C" fn hostshell_connect_with_auth_input(
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
-    let host: Host = match serde_json::from_str(str_slice) {
-        Ok(h) => h,
+    let mut connect_payload: serde_json::Value = match serde_json::from_str(str_slice) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::error!("Rejected malformed host configuration JSON: {e}");
+            return std::ptr::null_mut();
+        }
+    };
+    let terminal_settings: crate::model::host::TerminalSessionSettings = connect_payload
+        .as_object_mut()
+        .and_then(|object| object.remove("terminal_settings"))
+        .and_then(|value| {
+            serde_json::from_value::<crate::model::host::TerminalSessionSettings>(value).ok()
+        })
+        .unwrap_or_default()
+        .normalized();
+    let host: Host = match serde_json::from_value(connect_payload) {
+        Ok(host) => host,
         Err(e) => {
             tracing::error!("Rejected malformed host configuration JSON: {e}");
             return std::ptr::null_mut();
@@ -466,6 +481,7 @@ pub extern "C" fn hostshell_connect_with_auth_input(
                 cols,
                 rows,
                 auto_accept_new_keys,
+                terminal_settings,
                 auth_input
                     .as_ref()
                     .map(|provider| provider as &crate::ssh::session::AuthInputProvider),

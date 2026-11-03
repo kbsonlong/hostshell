@@ -250,6 +250,7 @@ public final class HostShellBridge: @unchecked Sendable {
         cols: UInt32 = 80,
         rows: UInt32 = 24,
         autoAcceptNewKeys: Bool = true,
+        terminalPreferences: TerminalPreferences = .load(),
         onStage: @escaping (String) -> Void,
         onOutput: @escaping (Data) -> Void,
         onAuthInput: @escaping (String, String, String, Bool) -> String?,
@@ -258,7 +259,7 @@ public final class HostShellBridge: @unchecked Sendable {
         guard let ptr = enginePtr else { return nil }
         let encoder = JSONEncoder()
         guard let data = try? encoder.encode(host),
-              let jsonStr = String(data: data, encoding: .utf8) else { return nil }
+              let jsonStr = try? terminalPreferences.connectPayload(from: data) else { return nil }
 
         // Context box passed to C callbacks
         final class CallbackContext {

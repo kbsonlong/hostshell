@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::error::{HostShellError, Result};
-use crate::model::host::{AuthMethod, Host, JumpHost, ProxyMode};
+use crate::model::host::{AuthMethod, Host, JumpHost, ProxyMode, TerminalSessionSettings};
 use crate::model::known_host::KnownHostsStore;
 use crate::model::stage::{ConnectionStage, StageEvent};
 use crate::ssh::handler::{RemoteForwardTargets, TargetClientHandler};
@@ -413,6 +413,7 @@ impl SshSession {
             cols,
             rows,
             auto_accept_new_keys,
+            TerminalSessionSettings::default(),
             None,
         )
         .await
@@ -426,6 +427,7 @@ impl SshSession {
         cols: u32,
         rows: u32,
         auto_accept_new_keys: bool,
+        terminal_settings: TerminalSessionSettings,
         auth_input: Option<&AuthInputProvider>,
     ) -> Result<SessionHandle> {
         host.auth = crate::storage::keys::resolve_auth(&host.auth).map_err(HostShellError::Config)?;
@@ -862,7 +864,7 @@ impl SshSession {
 
         let pty_and_shell = async {
             channel
-                .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+                .request_pty(false, &terminal_settings.term_type, cols, rows, 0, 0, &[])
                 .await?;
             channel.request_shell(false).await
         };
@@ -895,10 +897,13 @@ impl SshSession {
         // 5. Spawn background session actor
         let stage_tx_clone = stage_tx.clone();
         tokio::spawn(async move {
-            let mut keepalive_interval = tokio::time::interval(Duration::from_secs(15));
+            let keepalive_seconds = terminal_settings.keepalive_seconds;
+            let mut keepalive_interval = tokio::time::interval(Duration::from_secs(
+                u64::from(keepalive_seconds.max(1)),
+            ));
             loop {
                 tokio::select! {
-                    _ = keepalive_interval.tick() => {
+                    _ = keepalive_interval.tick(), if keepalive_seconds > 0 => {
                         let _ = handle.send_keepalive(false).await;
                     }
 

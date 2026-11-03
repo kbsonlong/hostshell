@@ -332,6 +332,7 @@ public final class SessionViewModel: ObservableObject {
         case "failed":
             isConnecting = false
             isConnected = false
+            isDisconnected = true
             let fStage = details?["failed_stage"] as? String ?? "未知阶段"
             let cat = details?["error_category"] as? String ?? "Error"
             let msg = details?["message"] as? String ?? "未知错误"

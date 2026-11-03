@@ -57,6 +57,23 @@ enum ModelContractCheck {
         let encoded = try JSONEncoder().encode(response.hosts)
         let decodedAgain = try JSONDecoder().decode([Host].self, from: encoded)
         precondition(decodedAgain == response.hosts)
-        print("macOS wire model: auth + proxy_command + jump_hosts decode/encode OK")
+        let preferences = TerminalPreferences(
+            fontSize: 30,
+            fontFamily: .jetBrainsMono,
+            theme: .light,
+            cursorStyle: .bar,
+            emulation: .tmux256color,
+            scrollbackLines: 20,
+            keepaliveSeconds: 1
+        )
+        precondition(preferences.fontSize == 24)
+        precondition(preferences.scrollbackLines == 100)
+        precondition(preferences.keepaliveSeconds == 5)
+        let connectPayload = try preferences.connectPayload(from: JSONEncoder().encode(response.hosts[0]))
+        let connectObject = try JSONSerialization.jsonObject(with: Data(connectPayload.utf8)) as! [String: Any]
+        let terminalSettings = connectObject["terminal_settings"] as! [String: Any]
+        precondition(terminalSettings["term_type"] as? String == "tmux-256color")
+        precondition(terminalSettings["keepalive_seconds"] as? Int == 5)
+        print("macOS wire model + terminal settings contract OK")
     }
 }

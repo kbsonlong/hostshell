@@ -5,6 +5,7 @@ import SwiftTerm
 import UIKit
 import AudioToolbox
 import UniformTypeIdentifiers
+import Network
 
 @_silgen_name("hostshell_engine_init") private func c_engine_init() -> OpaquePointer?
 @_silgen_name("hostshell_engine_free") private func c_engine_free(_ engine: OpaquePointer?)
@@ -110,11 +111,13 @@ final class AppModel: ObservableObject {
         onStage: @escaping (String) -> Void,
         onOutput: @escaping (Data) -> Void,
         onAuthInput: @escaping (String, String, String, Bool) -> String?,
-        onConnectStarted: ((IOSConnectCancellation) -> Void)? = nil
+        onConnectStarted: ((IOSConnectCancellation) -> Void)? = nil,
+        terminalPreferences: TerminalPreferences = .load()
     ) -> Session {
         let context = IOSCallbacks(onStage: onStage, onOutput: onOutput, onAuthInput: onAuthInput)
         let opaque = Unmanaged.passRetained(context).toOpaque()
-        guard let data = try? JSONEncoder().encode(host), let json = String(data: data, encoding: .utf8) else {
+        guard let data = try? JSONEncoder().encode(host),
+              let json = try? terminalPreferences.connectPayload(from: data) else {
             Unmanaged<IOSCallbacks>.fromOpaque(opaque).release()
             return Session(pointer: nil)
         }
@@ -938,35 +941,57 @@ final class IOSAuthPromptWaiter {
 
 struct HostSessionScreen: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     let host: Host
     @StateObject private var terminal = TerminalModel()
+    @StateObject private var networkMonitor = NetworkStatusMonitor()
     @State private var stage = "正在连接…"
     @State private var stageDetails = "正在连接…"
     @State private var connected = false
+    @State private var connecting = true
+    @State private var connectionAttempt = 0
+    @State private var connectionNotice: String?
+    @State private var showingTerminalSettings = false
     @State private var showingStageDetails = false
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage(TerminalPreferences.cursorStyleKey) private var terminalCursorStyle = TerminalCursorStyle.block.rawValue
+    @AppStorage(TerminalPreferences.emulationKey) private var terminalEmulation = TerminalEmulation.xterm256color.rawValue
+    @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
+    @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
     @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Circle().fill(connected ? .green : .orange).frame(width: 8, height: 8)
+                Circle().fill(connected ? .green : (connecting ? .orange : .red)).frame(width: 8, height: 8)
                 Button { showingStageDetails = true } label: {
-                    Text(stage).font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(connectionNotice ?? stage).font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).accessibilityLabel("查看和复制连接状态")
                 Spacer()
-                Button("断开") {
-                    terminal.cancelConnect()
-                    terminal.cancelPendingAuthPrompt()
-                    terminal.session?.close()
-                    connected = false
-                }.font(.caption)
+                Button { showingTerminalSettings = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .font(.caption)
+                .accessibilityLabel("终端设置")
+                if connected || connecting {
+                    Button(connecting ? "取消" : "断开") {
+                        terminal.cancelConnect()
+                        terminal.cancelPendingAuthPrompt()
+                        terminal.session?.close()
+                        terminal.session = nil
+                        connected = false
+                        connecting = false
+                        stage = "连接已断开"
+                    }.font(.caption)
+                } else {
+                    Button("重连", action: reconnect).font(.caption)
+                }
             }.padding(8)
             IOSSwiftTerm(
                 session: terminal,
-                fontSize: terminalFontSize,
-                theme: TerminalTheme(rawValue: terminalTheme) ?? .dark,
+                preferences: terminalPreferences,
                 onResize: { cols, rows in
                 terminal.session?.resize(cols: UInt32(cols), rows: UInt32(rows))
             }).background(themeBackground)
@@ -1000,10 +1025,18 @@ struct HostSessionScreen: View {
             IOSAuthInputSheet(terminal: terminal, prompt: prompt)
                 .interactiveDismissDisabled()
         }
-        .task {
+        .sheet(isPresented: $showingTerminalSettings) {
+            IOSTerminalSettingsSheet()
+        }
+        .task(id: connectionAttempt) {
+            let attemptID = connectionAttempt
+            let preferences = terminalPreferences
+            terminal.beginConnectionAttempt()
+            connecting = true
             let newSession = await Task.detached(priority: .userInitiated) {
                 model.connect(host, onStage: { json in
                     DispatchQueue.main.async {
+                        guard connectionAttempt == attemptID else { return }
                         if let data = json.data(using: .utf8),
                            let event = try? JSONDecoder().decode(StageEvent.self, from: data) {
                             let details = event.stage.details ?? [:]
@@ -1012,13 +1045,18 @@ struct HostSessionScreen: View {
                             stage = [event.stage.status, message, suggestion].compactMap { $0 }.joined(separator: "\n")
                             stageDetails = stage + "\n\n" + json
                             connected = event.stage.status == "connected"
+                            connecting = !["connected", "disconnected", "failed"].contains(event.stage.status)
                         } else {
                             stage = json
                             stageDetails = json
+                            connecting = false
                         }
                     }
                 }, onOutput: { data in
-                    DispatchQueue.main.async { terminal.output?(data) }
+                    DispatchQueue.main.async {
+                        guard connectionAttempt == attemptID else { return }
+                        terminal.output?(data)
+                    }
                 }, onAuthInput: { name, instructions, prompt, echo in
                     let info = IOSAuthPromptInfo(
                         id: UUID(),
@@ -1038,20 +1076,60 @@ struct HostSessionScreen: View {
                     return response
                 }, onConnectStarted: { cancellation in
                     DispatchQueue.main.sync {
+                        guard connectionAttempt == attemptID else {
+                            cancellation.cancel()
+                            return
+                        }
                         terminal.beginConnect(cancellation)
                     }
-                })
+                }, terminalPreferences: preferences)
             }.value
+            guard connectionAttempt == attemptID else {
+                newSession.close()
+                return
+            }
             terminal.connectCancellation?.finish()
             terminal.connectCancellation = nil
             terminal.session = newSession
             terminal.input = { [weak newSession] bytes in newSession?.write(bytes) }
+            if !connected { connecting = false }
+        }
+        .onChange(of: networkMonitor.isAvailable) { available in
+            guard let available else { return }
+            if !available {
+                connectionNotice = "网络不可用，SSH 连接可能已中断"
+            } else if !connected {
+                connectionNotice = "网络已恢复，可点击重连"
+            } else {
+                connectionNotice = nil
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                connectionNotice = "应用已进入后台，系统可能暂停网络连接"
+            } else if phase == .active {
+                connectionNotice = connected ? nil : "应用已回到前台，可点击重连"
+            }
         }
         .onDisappear {
             terminal.cancelConnect()
             terminal.cancelPendingAuthPrompt()
             terminal.session?.close()
         }
+    }
+
+    private func reconnect() {
+        terminal.cancelConnect()
+        terminal.cancelPendingAuthPrompt()
+        terminal.session?.close()
+        terminal.session = nil
+        terminal.beginConnectionAttempt()
+        connected = false
+        connecting = true
+        connectionNotice = nil
+        stage = "正在重连…"
+        stageDetails = stage
+        connectionAttempt += 1
     }
 
     private func terminalKeyButton(_ title: String, bytes: [UInt8]) -> some View {
@@ -1061,7 +1139,19 @@ struct HostSessionScreen: View {
     }
 
     private var themeBackground: SwiftUI.Color {
-        (TerminalTheme(rawValue: terminalTheme) ?? .dark) == .dark ? .black : .white
+        terminalPreferences.theme == .dark ? .black : .white
+    }
+
+    private var terminalPreferences: TerminalPreferences {
+        TerminalPreferences(
+            fontSize: terminalFontSize,
+            fontFamily: TerminalFontFamily(rawValue: terminalFontFamily) ?? .system,
+            theme: TerminalTheme(rawValue: terminalTheme) ?? .dark,
+            cursorStyle: TerminalCursorStyle(rawValue: terminalCursorStyle) ?? .block,
+            emulation: TerminalEmulation(rawValue: terminalEmulation) ?? .xterm256color,
+            scrollbackLines: terminalScrollbackLines,
+            keepaliveSeconds: terminalKeepaliveSeconds
+        )
     }
 
     private var selectedShortcuts: [TerminalShortcut] {
@@ -1072,7 +1162,12 @@ struct HostSessionScreen: View {
 
 private struct IOSTerminalSettingsSheet: View {
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage(TerminalPreferences.cursorStyleKey) private var terminalCursorStyle = TerminalCursorStyle.block.rawValue
+    @AppStorage(TerminalPreferences.emulationKey) private var terminalEmulation = TerminalEmulation.xterm256color.rawValue
+    @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
+    @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
     @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
 
     var body: some View {
@@ -1086,12 +1181,49 @@ private struct IOSTerminalSettingsSheet: View {
                     }
                     Slider(value: $terminalFontSize, in: 10...24, step: 1)
                         .accessibilityLabel("终端字体大小")
+                    Picker("等宽字体", selection: $terminalFontFamily) {
+                        ForEach(TerminalFontFamily.allCases) { font in
+                            Text(font.displayName).tag(font.rawValue)
+                        }
+                    }
                     Picker("配色主题", selection: $terminalTheme) {
                         ForEach(TerminalTheme.allCases) { theme in
                             Text(theme.displayName).tag(theme.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
+                    Picker("光标样式", selection: $terminalCursorStyle) {
+                        ForEach(TerminalCursorStyle.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                }
+
+                Section("会话参数") {
+                    Picker("终端仿真", selection: $terminalEmulation) {
+                        ForEach(TerminalEmulation.allCases) { type in
+                            Text(type.rawValue).tag(type.rawValue)
+                        }
+                    }
+                    Stepper(value: $terminalScrollbackLines, in: 100...10_000, step: 100) {
+                        HStack {
+                            Text("滚动缓冲区")
+                            Spacer()
+                            Text("\(terminalScrollbackLines) 行").foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }
+                    Stepper(value: $terminalKeepaliveSeconds, in: 0...120, step: 5) {
+                        HStack {
+                            Text("SSH 心跳")
+                            Spacer()
+                            Text(terminalKeepaliveSeconds == 0 ? "关闭" : "\(terminalKeepaliveSeconds) 秒")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    Text("心跳范围：关闭或 5–120 秒。滚动缓冲区范围：100–10,000 行。终端仿真和心跳在下次连接时生效。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("快捷键栏") {
@@ -1133,6 +1265,7 @@ private struct IOSTerminalSettingsSheet: View {
 
 private enum TerminalShortcut: String, CaseIterable, Identifiable {
     case escape, tab, controlC, controlD, controlA, controlE, controlL, controlZ
+    case altB, altF, altLeft, altRight
     case left, up, down, right
 
     static let defaultIDs = ["escape", "tab", "controlC", "controlD", "up", "down"]
@@ -1149,6 +1282,10 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
         case .controlE: return "Ctrl-E"
         case .controlL: return "Ctrl-L"
         case .controlZ: return "Ctrl-Z"
+        case .altB: return "Alt-B"
+        case .altF: return "Alt-F"
+        case .altLeft: return "Alt-←"
+        case .altRight: return "Alt-→"
         case .left: return "←"
         case .up: return "↑"
         case .down: return "↓"
@@ -1166,6 +1303,10 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
         case .controlE: return [0x05]
         case .controlL: return [0x0C]
         case .controlZ: return [0x1A]
+        case .altB: return [0x1B, 0x62]
+        case .altF: return [0x1B, 0x66]
+        case .altLeft: return [0x1B, 0x1B, 0x5B, 0x44]
+        case .altRight: return [0x1B, 0x1B, 0x5B, 0x43]
         case .left: return [0x1B, 0x5B, 0x44]
         case .up: return [0x1B, 0x5B, 0x41]
         case .down: return [0x1B, 0x5B, 0x42]
@@ -1190,6 +1331,11 @@ final class TerminalModel: ObservableObject {
         } else {
             connectCancellation = cancellation
         }
+    }
+
+    func beginConnectionAttempt() {
+        connectionCancelled = false
+        connectCancellation = nil
     }
 
     func cancelConnect() {
@@ -1223,6 +1369,22 @@ final class TerminalModel: ObservableObject {
         authPromptWaiter = nil
         authPromptInfo = nil
     }
+}
+
+@MainActor
+final class NetworkStatusMonitor: ObservableObject {
+    @Published private(set) var isAvailable: Bool?
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "com.hostshell.network-monitor")
+
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async { self?.isAvailable = path.status == .satisfied }
+        }
+        monitor.start(queue: queue)
+    }
+
+    deinit { monitor.cancel() }
 }
 
 private struct IOSAuthInputSheet: View {
@@ -1266,14 +1428,19 @@ private struct IOSAuthInputSheet: View {
 
 struct IOSSwiftTerm: UIViewRepresentable {
     @ObservedObject var session: TerminalModel
-    let fontSize: Double
-    let theme: TerminalTheme
+    let preferences: TerminalPreferences
     let onResize: (Int, Int) -> Void
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+        let options = SwiftTerm.TerminalOptions(
+            termName: preferences.emulation.rawValue,
+            cursorStyle: swiftCursorStyle,
+            scrollback: preferences.scrollbackLines
+        )
         let view = SwiftTerm.TerminalView(
             frame: .zero,
-            font: UIFont.monospacedSystemFont(ofSize: CGFloat(min(max(fontSize, 10), 24)), weight: .regular)
+            font: terminalFont,
+            options: options
         )
         view.terminalDelegate = context.coordinator
         applyAppearance(to: view)
@@ -1286,17 +1453,38 @@ struct IOSSwiftTerm: UIViewRepresentable {
     }
 
     private func applyAppearance(to view: SwiftTerm.TerminalView) {
-        let size = CGFloat(min(max(fontSize, 10), 24))
-        if view.font.pointSize != size {
-            view.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        if view.font != terminalFont {
+            view.font = terminalFont
         }
-        switch theme {
+        let terminal = view.getTerminal()
+        terminal.setCursorStyle(swiftCursorStyle)
+        if terminal.options.scrollback != preferences.scrollbackLines {
+            terminal.changeHistorySize(preferences.scrollbackLines)
+        }
+        switch preferences.theme {
         case .dark:
             view.nativeBackgroundColor = .black
             view.nativeForegroundColor = .white
         case .light:
             view.nativeBackgroundColor = .white
             view.nativeForegroundColor = .black
+        }
+    }
+
+    private var terminalFont: UIFont {
+        let size = CGFloat(min(max(preferences.fontSize, 10), 24))
+        if let name = preferences.fontFamily.postScriptName,
+           let font = UIFont(name: name, size: size) {
+            return font
+        }
+        return UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    private var swiftCursorStyle: SwiftTerm.CursorStyle {
+        switch preferences.cursorStyle {
+        case .block: return .blinkBlock
+        case .underline: return .steadyUnderline
+        case .bar: return .steadyBar
         }
     }
 

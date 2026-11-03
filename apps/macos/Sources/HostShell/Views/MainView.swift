@@ -94,16 +94,23 @@ private final class SessionWindowController: NSWindowController, NSWindowDelegat
 private struct SessionWindowContent: View {
     @ObservedObject var sessionVM: SessionViewModel
     let onClose: () -> Void
+    @State private var hasConnected = false
 
     var body: some View {
         Group {
-            if sessionVM.isConnected {
+            if hasConnected || sessionVM.isConnected {
                 TerminalView(sessionVM: sessionVM, onClose: onClose)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ConnectionStageView(sessionVM: sessionVM, onCancel: onClose)
             }
         }
-        .animation(.default, value: sessionVM.isConnected)
+        .onChange(of: sessionVM.isConnected) { isConnected in
+            if isConnected { hasConnected = true }
+        }
+        .onAppear {
+            if sessionVM.isConnected { hasConnected = true }
+        }
+        .animation(.default, value: hasConnected)
     }
 }

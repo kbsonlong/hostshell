@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "HostShell", targets: ["HostShell"])
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMinor(from: "1.2.0"))
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMinor(from: "1.19.0"))
     ],
     targets: [
         .executableTarget(

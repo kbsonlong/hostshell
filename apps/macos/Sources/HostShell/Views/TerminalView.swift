@@ -7,12 +7,20 @@ import SwiftTerm
 /// Wraps SwiftTerm's AppKit TerminalView for SwiftUI and wires it to the SSH session.
 struct SwiftTermRepresentable: NSViewRepresentable {
     @ObservedObject var sessionVM: SessionViewModel
-    let fontSize: Double
-    let theme: TerminalTheme
+    let preferences: TerminalPreferences
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
         // SwiftTerm derives its initial rows and columns from the frame.
-        let tv = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 700, height: 460))
+        let options = SwiftTerm.TerminalOptions(
+            termName: preferences.emulation.rawValue,
+            cursorStyle: swiftCursorStyle,
+            scrollback: preferences.scrollbackLines
+        )
+        let tv = SwiftTerm.TerminalView(
+            frame: CGRect(x: 0, y: 0, width: 700, height: 460),
+            font: terminalFont,
+            options: options
+        )
         applyAppearance(to: tv)
         tv.terminalDelegate = context.coordinator
         return tv
@@ -28,17 +36,38 @@ struct SwiftTermRepresentable: NSViewRepresentable {
     }
 
     private func applyAppearance(to view: SwiftTerm.TerminalView) {
-        let size = CGFloat(min(max(fontSize, 10), 24))
-        if view.font.pointSize != size {
-            view.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        if view.font != terminalFont {
+            view.font = terminalFont
         }
-        switch theme {
+        let terminal = view.getTerminal()
+        terminal.setCursorStyle(swiftCursorStyle)
+        if terminal.options.scrollback != preferences.scrollbackLines {
+            terminal.changeHistorySize(preferences.scrollbackLines)
+        }
+        switch preferences.theme {
         case .dark:
             view.nativeBackgroundColor = .black
             view.nativeForegroundColor = .white
         case .light:
             view.nativeBackgroundColor = .white
             view.nativeForegroundColor = .black
+        }
+    }
+
+    private var terminalFont: NSFont {
+        let size = CGFloat(min(max(preferences.fontSize, 10), 24))
+        if let name = preferences.fontFamily.postScriptName,
+           let font = NSFont(name: name, size: size) {
+            return font
+        }
+        return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    private var swiftCursorStyle: SwiftTerm.CursorStyle {
+        switch preferences.cursorStyle {
+        case .block: return .blinkBlock
+        case .underline: return .steadyUnderline
+        case .bar: return .steadyBar
         }
     }
 
@@ -104,7 +133,12 @@ struct SwiftTermRepresentable: NSViewRepresentable {
 public struct TerminalView: View {
     @ObservedObject var sessionVM: SessionViewModel
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage(TerminalPreferences.cursorStyleKey) private var terminalCursorStyle = TerminalCursorStyle.block.rawValue
+    @AppStorage(TerminalPreferences.emulationKey) private var terminalEmulation = TerminalEmulation.xterm256color.rawValue
+    @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
+    @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
     public let onClose: () -> Void
 
     public var body: some View {
@@ -152,12 +186,20 @@ public struct TerminalView: View {
             Divider()
 
             // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
-            SwiftTermRepresentable(
-                sessionVM: sessionVM,
-                fontSize: terminalFontSize,
-                theme: TerminalTheme(rawValue: terminalTheme) ?? .dark
-            )
+            SwiftTermRepresentable(sessionVM: sessionVM, preferences: terminalPreferences)
                 .ignoresSafeArea(edges: .bottom)
         }
+    }
+
+    private var terminalPreferences: TerminalPreferences {
+        TerminalPreferences(
+            fontSize: terminalFontSize,
+            fontFamily: TerminalFontFamily(rawValue: terminalFontFamily) ?? .system,
+            theme: TerminalTheme(rawValue: terminalTheme) ?? .dark,
+            cursorStyle: TerminalCursorStyle(rawValue: terminalCursorStyle) ?? .block,
+            emulation: TerminalEmulation(rawValue: terminalEmulation) ?? .xterm256color,
+            scrollbackLines: terminalScrollbackLines,
+            keepaliveSeconds: terminalKeepaliveSeconds
+        )
     }
 }
