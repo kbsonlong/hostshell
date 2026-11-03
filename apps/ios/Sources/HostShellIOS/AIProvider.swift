@@ -29,6 +29,31 @@ enum AIProviderSettings {
         guard let url = components.url else { throw AIProviderError.invalidBaseURL }
         return url
     }
+
+    static func redactSensitiveText(_ text: String) -> String {
+        var redacted = text
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"#,
+            template: "[私钥内容已脱敏]"
+        )
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"(?im)(^\s*(?:authorization|cookie|set-cookie)\s*:\s*).+$"#,
+            template: "$1[已脱敏]"
+        )
+        return replacingMatches(
+            in: redacted,
+            pattern: #"(?i)([A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)[A-Za-z0-9_-]*[ \t]*[:=][ \t]*)(\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"#,
+            template: "$1[已脱敏]"
+        )
+    }
+
+    private static func replacingMatches(in text: String, pattern: String, template: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.stringByReplacingMatches(in: text, range: range, withTemplate: template)
+    }
 }
 
 enum AIProviderError: LocalizedError {

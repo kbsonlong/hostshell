@@ -60,12 +60,12 @@ struct AIAssistantView: View {
                         .font(.subheadline)
                         .onChange(of: includeTerminalOutput) { included in
                             if included && terminalContext.isEmpty {
-                                terminalContext = terminalOutput
+                                terminalContext = AIProviderSettings.redactSensitiveText(terminalOutput)
                             }
                         }
 
                     if includeTerminalOutput {
-                        Text("上下文仅在你确认预览并发送后外发；请先检查其中是否包含密钥或隐私信息。")
+                        Text("已尝试脱敏常见凭据。上下文仅在你确认预览并发送后外发；请继续检查密钥和隐私信息。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         TextEditor(text: $terminalContext)
