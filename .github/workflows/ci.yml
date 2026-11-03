@@ -76,6 +76,18 @@ jobs:
       - name: Prefer rustup toolchain for Cargo commands
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - name: Verify release tag and set app version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CLI_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "hostshell-cli"))')"
+          if [[ "$VERSION" != "$CLI_VERSION" ]]; then
+            echo "Tag version $VERSION does not match hostshell-cli Cargo version $CLI_VERSION" >&2
+            exit 1
+          fi
+          echo "HOSTSHELL_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "HOSTSHELL_BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
       - name: Build CLI
         run: ./scripts/build_cli.sh
 

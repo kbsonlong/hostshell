@@ -17,6 +17,13 @@ public struct SettingsView: View {
     @State private var refreshingAIModels = false
     @State private var aiSettingsMessage: String?
 
+    private var appVersionDescription: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "未知"
+        let build = info["CFBundleVersion"] as? String
+        return build.map { "v\(version) (\($0))" } ?? "v\(version)"
+    }
+
     private var fontSizeBinding: Binding<Double> {
         Binding(
             get: { terminalFontSize },
@@ -337,7 +344,7 @@ public struct SettingsView: View {
     private var aboutSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 9) {
-                settingStatus("版本", value: "v0.1.0 MVP", color: .secondary)
+                settingStatus("版本", value: appVersionDescription, color: .secondary)
                 settingStatus("底层引擎", value: "Rust · hostshell-core", color: .secondary)
                 settingStatus("界面", value: "SwiftUI · macOS / iOS", color: .secondary)
             }
