@@ -77,6 +77,10 @@ struct AIAssistantView: View {
                     if let errorMessage {
                         Text(errorMessage).font(.caption).foregroundStyle(.red)
                     }
+                    if isSending {
+                        ProgressView("正在等待模型回复…")
+                            .font(.caption)
+                    }
 
                     Button("预览发送内容") {
                         preview = makeUserMessage()
