@@ -22,6 +22,8 @@ import UniformTypeIdentifiers
 @_silgen_name("hostshell_session_write") private func c_session_write(_ session: OpaquePointer?, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int32
 @_silgen_name("hostshell_session_resize") private func c_session_resize(_ session: OpaquePointer?, _ cols: UInt32, _ rows: UInt32) -> Int32
 @_silgen_name("hostshell_session_close") private func c_session_close(_ session: OpaquePointer?)
+@_silgen_name("hostshell_cancel_connect") private func c_cancel_connect(_ userData: UnsafeMutableRawPointer?)
+@_silgen_name("hostshell_finish_connect") private func c_finish_connect(_ userData: UnsafeMutableRawPointer?)
 
 private typealias StageCallback = @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
 private typealias OutputCallback = @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void
@@ -107,7 +109,8 @@ final class AppModel: ObservableObject {
         _ host: Host,
         onStage: @escaping (String) -> Void,
         onOutput: @escaping (Data) -> Void,
-        onAuthInput: @escaping (String, String, String, Bool) -> String?
+        onAuthInput: @escaping (String, String, String, Bool) -> String?,
+        onConnectStarted: ((IOSConnectCancellation) -> Void)? = nil
     ) -> Session {
         let context = IOSCallbacks(onStage: onStage, onOutput: onOutput, onAuthInput: onAuthInput)
         let opaque = Unmanaged.passRetained(context).toOpaque()
@@ -115,9 +118,12 @@ final class AppModel: ObservableObject {
             Unmanaged<IOSCallbacks>.fromOpaque(opaque).release()
             return Session(pointer: nil)
         }
+        let cancellation = IOSConnectCancellation(userData: opaque)
+        onConnectStarted?(cancellation)
         let pointer = json.withCString {
             c_connect(engine, $0, 80, 24, true, iosStageCallback, iosOutputCallback, iosAuthInputCallback, opaque)
         }
+        cancellation.finish()
         if pointer == nil { Unmanaged<IOSCallbacks>.fromOpaque(opaque).release() }
         return Session(pointer: pointer, context: pointer == nil ? nil : opaque)
     }
@@ -190,6 +196,27 @@ final class Session: ObservableObject {
     deinit { close() }
 }
 
+final class IOSConnectCancellation {
+    private let lock = NSLock()
+    private let userData: UnsafeMutableRawPointer
+    private var active = true
+
+    init(userData: UnsafeMutableRawPointer) { self.userData = userData }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        if active { c_cancel_connect(userData) }
+    }
+
+    func finish() {
+        lock.lock()
+        c_finish_connect(userData)
+        active = false
+        lock.unlock()
+    }
+}
+
 @main
 struct HostShellIOSApp: App {
     @StateObject private var model = AppModel()
@@ -257,6 +284,7 @@ struct HostListScreen: View {
                         .accessibilityLabel("跳板机资产")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { activeSheet = .settings } label: { Image(systemName: "textformat") }.accessibilityLabel("终端设置")
                     Button { activeSheet = .keys } label: { Image(systemName: "key.fill") }.accessibilityLabel("证书管理")
                     Button { activeSheet = .importConfig } label: { Image(systemName: "square.and.arrow.down") }.accessibilityLabel("导入 SSH 配置")
                     Button { activeSheet = .newHost } label: { Image(systemName: "plus") }.accessibilityLabel("添加主机")
@@ -269,6 +297,7 @@ struct HostListScreen: View {
                 case .importConfig: ImportSheet()
                 case .jumps: JumpHostListSheet()
                 case .keys: KeyManagementSheet()
+                case .settings: IOSTerminalSettingsSheet()
                 }
             }
             .alert("HostShell", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
@@ -279,7 +308,7 @@ struct HostListScreen: View {
 }
 
 private enum HostListSheet: Identifiable {
-    case newHost, editHost(Host), importConfig, jumps, keys
+    case newHost, editHost(Host), importConfig, jumps, keys, settings
     var id: String {
         switch self {
         case .newHost: return "new-host"
@@ -287,6 +316,7 @@ private enum HostListSheet: Identifiable {
         case .importConfig: return "import-config"
         case .jumps: return "jumps"
         case .keys: return "keys"
+        case .settings: return "settings"
         }
     }
 }
@@ -914,6 +944,8 @@ struct HostSessionScreen: View {
     @State private var stageDetails = "正在连接…"
     @State private var connected = false
     @State private var showingStageDetails = false
+    @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -923,11 +955,20 @@ struct HostSessionScreen: View {
                     Text(stage).font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).accessibilityLabel("查看和复制连接状态")
                 Spacer()
-                Button("断开") { terminal.session?.close(); connected = false }.font(.caption)
+                Button("断开") {
+                    terminal.cancelConnect()
+                    terminal.cancelPendingAuthPrompt()
+                    terminal.session?.close()
+                    connected = false
+                }.font(.caption)
             }.padding(8)
-            IOSSwiftTerm(session: terminal, onResize: { cols, rows in
+            IOSSwiftTerm(
+                session: terminal,
+                fontSize: terminalFontSize,
+                theme: TerminalTheme(rawValue: terminalTheme) ?? .dark,
+                onResize: { cols, rows in
                 terminal.session?.resize(cols: UInt32(cols), rows: UInt32(rows))
-            }).background(Color.black)
+            }).background(themeBackground)
             HStack(spacing: 18) {
                 terminalKeyButton("ESC", bytes: [0x1B])
                 terminalKeyButton("TAB", bytes: [0x09])
@@ -992,12 +1033,19 @@ struct HostSessionScreen: View {
                         terminal.endAuthPrompt(info.id)
                     }
                     return response
+                }, onConnectStarted: { cancellation in
+                    DispatchQueue.main.sync {
+                        terminal.beginConnect(cancellation)
+                    }
                 })
             }.value
+            terminal.connectCancellation?.finish()
+            terminal.connectCancellation = nil
             terminal.session = newSession
             terminal.input = { [weak newSession] bytes in newSession?.write(bytes) }
         }
         .onDisappear {
+            terminal.cancelConnect()
             terminal.cancelPendingAuthPrompt()
             terminal.session?.close()
         }
@@ -1008,15 +1056,64 @@ struct HostSessionScreen: View {
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(.primary)
     }
+
+    private var themeBackground: SwiftUI.Color {
+        (TerminalTheme(rawValue: terminalTheme) ?? .dark) == .dark ? .black : .white
+    }
+}
+
+private struct IOSTerminalSettingsSheet: View {
+    @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("终端外观") {
+                    HStack {
+                        Text("字体大小")
+                        Spacer()
+                        Text("\(Int(terminalFontSize)) pt").foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Slider(value: $terminalFontSize, in: 10...24, step: 1)
+                        .accessibilityLabel("终端字体大小")
+                    Picker("配色主题", selection: $terminalTheme) {
+                        ForEach(TerminalTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+            .navigationTitle("终端设置")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
 }
 
 @MainActor
 final class TerminalModel: ObservableObject {
     var session: Session?
+    var connectCancellation: IOSConnectCancellation?
+    private var connectionCancelled = false
     var output: ((Data) -> Void)?
     var input: (([UInt8]) -> Void)?
     @Published var authPromptInfo: IOSAuthPromptInfo?
     private var authPromptWaiter: IOSAuthPromptWaiter?
+
+    func beginConnect(_ cancellation: IOSConnectCancellation) {
+        if connectionCancelled {
+            cancellation.cancel()
+        } else {
+            connectCancellation = cancellation
+        }
+    }
+
+    func cancelConnect() {
+        connectionCancelled = true
+        connectCancellation?.cancel()
+        connectCancellation = nil
+    }
 
     func beginAuthPrompt(_ info: IOSAuthPromptInfo, waiter: IOSAuthPromptWaiter) {
         authPromptInfo = info
@@ -1086,17 +1183,39 @@ private struct IOSAuthInputSheet: View {
 
 struct IOSSwiftTerm: UIViewRepresentable {
     @ObservedObject var session: TerminalModel
+    let fontSize: Double
+    let theme: TerminalTheme
     let onResize: (Int, Int) -> Void
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = SwiftTerm.TerminalView(frame: .zero)
+        let view = SwiftTerm.TerminalView(
+            frame: .zero,
+            font: UIFont.monospacedSystemFont(ofSize: CGFloat(min(max(fontSize, 10), 24)), weight: .regular)
+        )
         view.terminalDelegate = context.coordinator
-        view.backgroundColor = .black
+        applyAppearance(to: view)
         session.output = { [weak view] data in view?.feed(byteArray: Array(data)[...]) }
         return view
     }
 
-    func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {}
+    func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
+        applyAppearance(to: uiView)
+    }
+
+    private func applyAppearance(to view: SwiftTerm.TerminalView) {
+        let size = CGFloat(min(max(fontSize, 10), 24))
+        if view.font.pointSize != size {
+            view.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        switch theme {
+        case .dark:
+            view.nativeBackgroundColor = .black
+            view.nativeForegroundColor = .white
+        case .light:
+            view.nativeBackgroundColor = .white
+            view.nativeForegroundColor = .black
+        }
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(session: session, onResize: onResize) }
 

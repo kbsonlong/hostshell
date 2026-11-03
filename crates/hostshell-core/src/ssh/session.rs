@@ -465,11 +465,23 @@ impl SshSession {
                     &host.hostname,
                     host.port,
                     connect_timeout,
+                    Arc::clone(&known_hosts),
+                    auto_accept_new_keys,
                     Some(&stage_tx),
                     auth_input,
                 )
                 .await
                 .map_err(|e| {
+                    if let HostShellError::HostKeyRejected { host: jump_host, .. } = &e {
+                        let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                            failed_stage: "HostKeyVerifying".to_string(),
+                            error_category: "HostKeyRejected".to_string(),
+                            message: format!("Jump host key for {jump_host} is not trusted or has changed."),
+                            suggestion: "Verify the jump host fingerprint out of band before connecting."
+                                .to_string(),
+                        }));
+                        return e;
+                    }
                     let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
                         failed_stage: "BastionHop".to_string(),
                         error_category: "ProxyFailed".to_string(),
@@ -567,10 +579,12 @@ impl SshSession {
             None
         };
         let remote_forward_targets = RemoteForwardTargets::default();
+        let host_key_rejection = Arc::new(Mutex::new(None));
         let handler = TargetClientHandler {
             hostname: host.hostname.clone(),
             port: host.port,
             known_hosts,
+            host_key_rejection: Arc::clone(&host_key_rejection),
             stage_tx: Some(stage_tx.clone()),
             auto_accept_new_keys,
             agent,
@@ -592,6 +606,19 @@ impl SshSession {
             HostShellError::SshHandshake("Target SSH handshake timed out".to_string())
         })?
         .map_err(|e| {
+            if let Some(fingerprint) = host_key_rejection.lock().unwrap().take() {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "HostKeyVerifying".to_string(),
+                    error_category: "HostKeyRejected".to_string(),
+                    message: format!("Host key for {}:{} is not trusted or has changed.", host.hostname, host.port),
+                    suggestion: "Verify the host fingerprint out of band before connecting."
+                        .to_string(),
+                }));
+                return HostShellError::HostKeyRejected {
+                    host: format!("{}:{}", host.hostname, host.port),
+                    fingerprint,
+                };
+            }
             let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
                 failed_stage: "SshHandshaking".to_string(),
                 error_category: "HandshakeFailed".to_string(),
@@ -652,7 +679,16 @@ impl SshSession {
                     reason: "Authentication timed out".to_string(),
                 });
             }
-            Ok(Err(error)) => return Err(error),
+            Ok(Err(error)) => {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "AuthenticatingUser".to_string(),
+                    error_category: "AuthenticationSetupFailed".to_string(),
+                    message: error.to_string(),
+                    suggestion: "Check the selected credential and authentication method, then retry."
+                        .to_string(),
+                }));
+                return Err(error);
+            }
             Ok(Ok(result)) => result,
         };
 
@@ -734,7 +770,18 @@ impl SshSession {
             Arc::clone(&handle),
             host.port_forwards.as_deref().unwrap_or_default(),
             remote_forward_targets,
-        ).await?;
+        )
+        .await
+        .map_err(|error| {
+            let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                failed_stage: "OpeningForwards".to_string(),
+                error_category: "ForwardSetupFailed".to_string(),
+                message: error.to_string(),
+                suggestion: "Check port-forward addresses, permissions, and remote forwarding policy."
+                    .to_string(),
+            }));
+            error
+        })?;
 
         // 4. Open PTY and Shell Channel
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::OpeningPty));
@@ -752,15 +799,64 @@ impl SshSession {
                 HostShellError::Session("Opening SSH session channel timed out".to_string())
             })?
             .map_err(|e| {
+            if let Some(fingerprint) = host_key_rejection.lock().unwrap().take() {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "HostKeyVerifying".to_string(),
+                    error_category: "HostKeyRejected".to_string(),
+                    message: format!("Host key for {}:{} is not trusted or has changed.", host.hostname, host.port),
+                    suggestion: "Verify the host fingerprint out of band before connecting."
+                        .to_string(),
+                }));
+                return HostShellError::HostKeyRejected {
+                    host: format!("{}:{}", host.hostname, host.port),
+                    fingerprint,
+                };
+            }
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "OpeningPty".to_string(),
+                    error_category: "SessionChannelFailed".to_string(),
+                    message: format!("Failed to open session channel: {}", e),
+                    suggestion: "Check server session limits and account shell access, then retry."
+                        .to_string(),
+                }));
                 HostShellError::Session(format!("Failed to open session channel: {}", e))
             })?;
 
         if host.forward_agent {
-            channel.agent_forward(true).await.map_err(|e| HostShellError::Session(format!("SSH Agent 转发请求失败: {e}")))?;
+            channel.agent_forward(true).await.map_err(|e| {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "OpeningPty".to_string(),
+                    error_category: "AgentForwardRejected".to_string(),
+                    message: format!("SSH Agent forwarding request failed: {e}"),
+                    suggestion: "Check that the server allows agent forwarding and retry."
+                        .to_string(),
+                }));
+                HostShellError::Session(format!("SSH Agent 转发请求失败: {e}"))
+            })?;
             match timeout(connect_timeout, channel.wait()).await {
                 Ok(Some(russh::ChannelMsg::Success)) => tracing::info!("SSH agent forwarding enabled"),
-                Ok(Some(russh::ChannelMsg::Failure)) => return Err(HostShellError::Session("远端拒绝 SSH Agent 转发".to_string())),
-                other => return Err(HostShellError::Session(format!("SSH Agent 转发未获得确认: {other:?}"))),
+                Ok(Some(russh::ChannelMsg::Failure)) => {
+                    let message = "远端拒绝 SSH Agent 转发";
+                    let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                        failed_stage: "OpeningPty".to_string(),
+                        error_category: "AgentForwardRejected".to_string(),
+                        message: message.to_string(),
+                        suggestion: "Check that the server allows agent forwarding and retry."
+                            .to_string(),
+                    }));
+                    return Err(HostShellError::Session(message.to_string()));
+                }
+                other => {
+                    let message = format!("SSH Agent 转发未获得确认: {other:?}");
+                    let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                        failed_stage: "OpeningPty".to_string(),
+                        error_category: "AgentForwardFailed".to_string(),
+                        message: message.clone(),
+                        suggestion: "Check server responsiveness and agent-forwarding policy."
+                            .to_string(),
+                    }));
+                    return Err(HostShellError::Session(message));
+                }
             }
         }
 
@@ -781,7 +877,16 @@ impl SshSession {
                 }));
                 HostShellError::Session("PTY or shell request timed out".to_string())
             })?
-            .map_err(|e| HostShellError::Session(format!("PTY or shell request failed: {}", e)))?;
+            .map_err(|e| {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "OpeningPty".to_string(),
+                    error_category: "PtyOrShellRejected".to_string(),
+                    message: format!("PTY or shell request failed: {}", e),
+                    suggestion: "Check server shell/session policy and account permissions, then retry."
+                        .to_string(),
+                }));
+                HostShellError::Session(format!("PTY or shell request failed: {}", e))
+            })?;
 
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::Connected {
             target: host.name.clone(),

@@ -7,19 +7,38 @@ import SwiftTerm
 /// Wraps SwiftTerm's AppKit TerminalView for SwiftUI and wires it to the SSH session.
 struct SwiftTermRepresentable: NSViewRepresentable {
     @ObservedObject var sessionVM: SessionViewModel
+    let fontSize: Double
+    let theme: TerminalTheme
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
         // SwiftTerm derives its initial rows and columns from the frame.
         let tv = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 700, height: 460))
+        applyAppearance(to: tv)
         tv.terminalDelegate = context.coordinator
         return tv
     }
 
     func updateNSView(_ tv: SwiftTerm.TerminalView, context: Context) {
         context.coordinator.sessionVM = sessionVM
+        applyAppearance(to: tv)
         // Drain raw SSH output into the terminal emulator
         if let data = sessionVM.takePendingOutput() {
             tv.feed(byteArray: Array(data)[...])
+        }
+    }
+
+    private func applyAppearance(to view: SwiftTerm.TerminalView) {
+        let size = CGFloat(min(max(fontSize, 10), 24))
+        if view.font.pointSize != size {
+            view.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        switch theme {
+        case .dark:
+            view.nativeBackgroundColor = .black
+            view.nativeForegroundColor = .white
+        case .light:
+            view.nativeBackgroundColor = .white
+            view.nativeForegroundColor = .black
         }
     }
 
@@ -84,6 +103,8 @@ struct SwiftTermRepresentable: NSViewRepresentable {
 
 public struct TerminalView: View {
     @ObservedObject var sessionVM: SessionViewModel
+    @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
     public let onClose: () -> Void
 
     public var body: some View {
@@ -131,7 +152,11 @@ public struct TerminalView: View {
             Divider()
 
             // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
-            SwiftTermRepresentable(sessionVM: sessionVM)
+            SwiftTermRepresentable(
+                sessionVM: sessionVM,
+                fontSize: terminalFontSize,
+                theme: TerminalTheme(rawValue: terminalTheme) ?? .dark
+            )
                 .ignoresSafeArea(edges: .bottom)
         }
     }

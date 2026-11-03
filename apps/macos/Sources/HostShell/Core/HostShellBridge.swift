@@ -70,6 +70,33 @@ func c_hostshell_session_resize(_ session: OpaquePointer?, _ cols: UInt32, _ row
 
 @_silgen_name("hostshell_session_close")
 func c_hostshell_session_close(_ session: OpaquePointer?)
+@_silgen_name("hostshell_cancel_connect")
+func c_hostshell_cancel_connect(_ userData: UnsafeMutableRawPointer?)
+@_silgen_name("hostshell_finish_connect")
+func c_hostshell_finish_connect(_ userData: UnsafeMutableRawPointer?)
+
+public final class ConnectCancellationBridge: @unchecked Sendable {
+    private let lock = NSLock()
+    private let userData: UnsafeMutableRawPointer
+    private var active = true
+
+    fileprivate init(userData: UnsafeMutableRawPointer) {
+        self.userData = userData
+    }
+
+    public func cancel() {
+        lock.lock()
+        if active { c_hostshell_cancel_connect(userData) }
+        lock.unlock()
+    }
+
+    fileprivate func finish() {
+        lock.lock()
+        c_hostshell_finish_connect(userData)
+        active = false
+        lock.unlock()
+    }
+}
 
 public final class SessionHandleBridge {
     private var sessionPtr: OpaquePointer?
@@ -225,7 +252,8 @@ public final class HostShellBridge: @unchecked Sendable {
         autoAcceptNewKeys: Bool = true,
         onStage: @escaping (String) -> Void,
         onOutput: @escaping (Data) -> Void,
-        onAuthInput: @escaping (String, String, String, Bool) -> String?
+        onAuthInput: @escaping (String, String, String, Bool) -> String?,
+        onConnectStarted: ((ConnectCancellationBridge) -> Void)? = nil
     ) -> SessionHandleBridge? {
         guard let ptr = enginePtr else { return nil }
         let encoder = JSONEncoder()
@@ -250,6 +278,8 @@ public final class HostShellBridge: @unchecked Sendable {
         }
         let ctx = CallbackContext(onStage: onStage, onOutput: onOutput, onAuthInput: onAuthInput)
         let ctxPtr = Unmanaged.passRetained(ctx).toOpaque()
+        let cancellation = ConnectCancellationBridge(userData: ctxPtr)
+        onConnectStarted?(cancellation)
 
         let stageCb: StageCallbackC = { cJson, userPtr in
             guard let cJson = cJson, let userPtr = userPtr else { return }
@@ -294,6 +324,7 @@ public final class HostShellBridge: @unchecked Sendable {
             authInputCb,
             ctxPtr
         )
+        cancellation.finish()
 
         guard let validSess = sessPtr else {
             _ = Unmanaged<CallbackContext>.fromOpaque(ctxPtr).takeRetainedValue()

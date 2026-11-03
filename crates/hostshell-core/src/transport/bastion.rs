@@ -9,12 +9,33 @@ use tokio::time::timeout;
 
 use crate::error::{HostShellError, Result};
 use crate::model::host::{AuthMethod, JumpHost};
+use crate::model::known_host::{KnownHostEntry, KnownHostsStore};
 use crate::model::stage::{ConnectionStage, StageEvent};
 use crate::transport::direct::connect_direct;
 use crate::transport::stream::BoxedStream;
 
 #[derive(Clone)]
-pub struct BastionClientHandler;
+pub struct BastionClientHandler {
+    hostname: String,
+    port: u16,
+    known_hosts: Arc<std::sync::Mutex<KnownHostsStore>>,
+    host_key_rejection: Arc<std::sync::Mutex<Option<String>>>,
+    auto_accept_new_keys: bool,
+    stage_tx: Option<UnboundedSender<StageEvent>>,
+}
+
+impl BastionClientHandler {
+    fn new(
+        hostname: String,
+        port: u16,
+        known_hosts: Arc<std::sync::Mutex<KnownHostsStore>>,
+        host_key_rejection: Arc<std::sync::Mutex<Option<String>>>,
+        auto_accept_new_keys: bool,
+        stage_tx: Option<UnboundedSender<StageEvent>>,
+    ) -> Self {
+        Self { hostname, port, known_hosts, host_key_rejection, auto_accept_new_keys, stage_tx }
+    }
+}
 
 fn decode_jump_private_key(
     key_data: &str,
@@ -77,7 +98,15 @@ mod tests {
             }
         });
         let mut client = russh::client::connect_stream(
-            Arc::new(russh::client::Config::default()), client_stream, BastionClientHandler,
+            Arc::new(russh::client::Config::default()), client_stream,
+            BastionClientHandler::new(
+                "test-jump".into(),
+                22,
+                Arc::new(std::sync::Mutex::new(KnownHostsStore::new())),
+                Arc::new(std::sync::Mutex::new(None)),
+                true,
+                None,
+            ),
         ).await.unwrap();
         let result = crate::ssh::session::authenticate_with_private_key(&mut client, "test-user", key).await.unwrap();
         assert!(matches!(result, russh::client::AuthResult::Success));
@@ -90,8 +119,63 @@ impl russh::client::Handler for BastionClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_key: &russh::keys::PublicKeyOrCertificate,
+        server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> std::result::Result<bool, Self::Error> {
+        let public_key = server_key.public_key();
+        let fingerprint = public_key.fingerprint(russh::keys::HashAlg::Sha256).to_string();
+        let key_type = public_key.algorithm().to_string();
+        let raw_public_key = public_key.to_openssh().unwrap_or_default();
+        let host = format!("{}:{}", self.hostname, self.port);
+        let mut known_hosts = self.known_hosts.lock().unwrap();
+
+        if let Some(existing) = known_hosts.find(&self.hostname, self.port) {
+            if existing.fingerprint == fingerprint {
+                return Ok(true);
+            }
+            if let Some(stage_tx) = &self.stage_tx {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "HostKeyVerifying".into(),
+                    error_category: "HostKeyMismatch".into(),
+                    message: format!("Jump host key changed for {host}; connection refused."),
+                    suggestion: "Verify the jump host fingerprint out of band before updating its trust record.".into(),
+                }));
+            }
+            *self.host_key_rejection.lock().unwrap() = Some(fingerprint);
+            return Ok(false);
+        }
+
+        if let Some(stage_tx) = &self.stage_tx {
+            let _ = stage_tx.send(StageEvent::now(ConnectionStage::HostKeyPrompt {
+                host: host.clone(),
+                key_type: key_type.clone(),
+                fingerprint: fingerprint.clone(),
+            }));
+        }
+
+        if !self.auto_accept_new_keys {
+            if let Some(stage_tx) = &self.stage_tx {
+                let _ = stage_tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "HostKeyVerifying".into(),
+                    error_category: "HostKeyUntrusted".into(),
+                    message: format!("Jump host key for {host} is not trusted; connection refused."),
+                    suggestion: "Verify the fingerprint, then enable first-use trust and reconnect.".into(),
+                }));
+            }
+            *self.host_key_rejection.lock().unwrap() = Some(fingerprint);
+            return Ok(false);
+        }
+
+        known_hosts.add(KnownHostEntry {
+            hostname: self.hostname.clone(),
+            port: self.port,
+            key_type,
+            fingerprint,
+            raw_public_key,
+            added_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
         Ok(true)
     }
 }
@@ -134,6 +218,8 @@ pub async fn connect_bastion_chain(
     target_host: &str,
     target_port: u16,
     timeout_duration: Duration,
+    known_hosts: Arc<std::sync::Mutex<KnownHostsStore>>,
+    auto_accept_new_keys: bool,
     stage_tx: Option<&UnboundedSender<StageEvent>>,
     auth_input: Option<&crate::ssh::session::AuthInputProvider>,
 ) -> Result<BoxedStream> {
@@ -164,23 +250,62 @@ pub async fn connect_bastion_chain(
             Some(s) => s,
         };
 
-        let mut handle = timeout(
+        let host_key_rejection = Arc::new(std::sync::Mutex::new(None));
+        let handshake_result = timeout(
             timeout_duration,
-            russh::client::connect_stream(russh_config.clone(), stream, BastionClientHandler),
+            russh::client::connect_stream(
+                russh_config.clone(),
+                stream,
+                BastionClientHandler::new(
+                    hop.hostname.clone(),
+                    hop.port,
+                    Arc::clone(&known_hosts),
+                    Arc::clone(&host_key_rejection),
+                    auto_accept_new_keys,
+                    stage_tx.cloned(),
+                ),
+            ),
         )
-        .await
-        .map_err(|_| {
-            HostShellError::Proxy(format!(
-                "Handshake timeout on jump host {} ({}:{})",
-                hop.name, hop.hostname, hop.port
-            ))
-        })?
-        .map_err(|e| {
-            HostShellError::Proxy(format!(
-                "SSH handshake failed on jump host {} ({}:{}): {}",
-                hop.name, hop.hostname, hop.port, e
-            ))
-        })?;
+        .await;
+        let mut handle = match handshake_result {
+            Ok(Ok(handle)) => handle,
+            result => {
+                if let Some(fingerprint) = host_key_rejection.lock().unwrap().take() {
+                    return Err(HostShellError::HostKeyRejected {
+                        host: format!("{}:{}", hop.hostname, hop.port),
+                        fingerprint,
+                    });
+                }
+                match result {
+                    Err(_) => {
+                        return Err(HostShellError::Proxy(format!(
+                            "Handshake timeout on jump host {} ({}:{})",
+                            hop.name, hop.hostname, hop.port
+                        )));
+                    }
+                    Ok(Err(error)) => {
+                        return Err(HostShellError::Proxy(format!(
+                            "SSH handshake failed on jump host {} ({}:{}): {}",
+                            hop.name, hop.hostname, hop.port, error
+                        )));
+                    }
+                    Ok(Ok(_)) => unreachable!(),
+                }
+            }
+        };
+
+        let auth_method = match &hop.auth {
+            AuthMethod::Password(_) => "password",
+            AuthMethod::PrivateKey { .. } => "publickey",
+            AuthMethod::Agent => "agent",
+            AuthMethod::KeyRef { .. } => unreachable!(),
+        };
+        if let Some(tx) = stage_tx {
+            let _ = tx.send(StageEvent::now(ConnectionStage::AuthenticatingUser {
+                username: hop.username.clone(),
+                method: format!("jump-host {auth_method}"),
+            }));
+        }
 
         let mut auth_res = match &hop.auth {
             AuthMethod::Password(pwd) => {

@@ -2,6 +2,8 @@ import SwiftUI
 
 public struct SettingsView: View {
     @ObservedObject var appVM: AppViewModel
+    @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
+    @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
 
     public var body: some View {
         ScrollView {
@@ -9,6 +11,25 @@ public struct SettingsView: View {
                 Text("设置与诊断")
                     .font(.title2)
                     .fontWeight(.bold)
+
+                GroupBox(label: Label("终端外观", systemImage: "textformat")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("字体大小")
+                            Spacer()
+                            Text("\(Int(terminalFontSize)) pt").monospacedDigit().foregroundStyle(.secondary)
+                        }
+                        Slider(value: $terminalFontSize, in: 10...24, step: 1)
+                            .accessibilityLabel("终端字体大小")
+                        Picker("配色主题", selection: $terminalTheme) {
+                            ForEach(TerminalTheme.allCases) { theme in
+                                Text(theme.displayName).tag(theme.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    .padding(6)
+                }
 
                 GroupBox(label: Label("安全与 Host Key 管理", systemImage: "shield.lefthalf.filled")) {
                     VStack(alignment: .leading, spacing: 10) {

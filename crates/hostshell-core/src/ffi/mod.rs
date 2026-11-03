@@ -1,5 +1,8 @@
 use std::ffi::{CStr, CString};
+use std::collections::{HashMap, HashSet};
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -18,6 +21,61 @@ pub struct EngineWrapper {
 
 pub struct SessionWrapper {
     pub cmd_tx: UnboundedSender<SessionCommand>,
+}
+
+#[derive(Default)]
+struct ConnectCancellationRegistry {
+    active: HashMap<usize, Arc<AtomicBool>>,
+    pending: HashSet<usize>,
+}
+
+static CONNECT_CANCELLATIONS: OnceLock<Mutex<ConnectCancellationRegistry>> = OnceLock::new();
+
+fn register_connect_cancellation(user_data: usize) -> Arc<AtomicBool> {
+    let registry = CONNECT_CANCELLATIONS
+        .get_or_init(|| Mutex::new(ConnectCancellationRegistry::default()));
+    let mut registry = registry.lock().unwrap();
+    let cancelled = Arc::new(AtomicBool::new(registry.pending.remove(&user_data)));
+    registry.active.insert(user_data, Arc::clone(&cancelled));
+    cancelled
+}
+
+fn unregister_connect_cancellation(user_data: usize) {
+    if let Some(registry) = CONNECT_CANCELLATIONS.get() {
+        let mut registry = registry.lock().unwrap();
+        registry.active.remove(&user_data);
+        registry.pending.remove(&user_data);
+    }
+}
+
+async fn wait_for_connect_cancellation(cancelled: Arc<AtomicBool>) {
+    while !cancelled.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_cancel_connect(user_data: *mut c_void) {
+    if user_data.is_null() {
+        return;
+    }
+    let key = user_data as usize;
+    let registry = CONNECT_CANCELLATIONS
+        .get_or_init(|| Mutex::new(ConnectCancellationRegistry::default()));
+    let mut registry = registry.lock().unwrap();
+    if let Some(cancelled) = registry.active.get(&key) {
+        cancelled.store(true, Ordering::Release);
+    } else {
+        registry.pending.insert(key);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_finish_connect(user_data: *mut c_void) {
+    if user_data.is_null() {
+        return;
+    }
+    unregister_connect_cancellation(user_data as usize);
 }
 
 #[cfg(target_os = "macos")]
@@ -179,7 +237,6 @@ pub extern "C" fn hostshell_save_host(engine: *mut EngineWrapper, host_json: *co
         Ok(h) => h,
         Err(_) => return -2,
     };
-
     match eng.store.save_host(host) {
         Ok(_) => 0,
         Err(_) => -3,
@@ -345,6 +402,9 @@ pub extern "C" fn hostshell_connect_with_auth_input(
             return std::ptr::null_mut();
         }
     };
+    let cancellation_key = user_data as usize;
+    let cancelled = register_connect_cancellation(cancellation_key);
+
     tracing::info!(
         "Starting SSH session: host={} endpoint={}:{} user={} proxy={:?} auth={}",
         host.name,
@@ -395,23 +455,45 @@ pub extern "C" fn hostshell_connect_with_auth_input(
     });
 
     let result = eng.runtime.block_on(async {
-        SshSession::connect_with_auth_input(
-            host,
-            selected_jump_hosts,
-            stored_hosts,
-            known_hosts,
-            cols,
-            rows,
-            auto_accept_new_keys,
-            auth_input
-                .as_ref()
-                .map(|provider| provider as &crate::ssh::session::AuthInputProvider),
-        )
-        .await
+        tokio::select! {
+            biased;
+            _ = wait_for_connect_cancellation(cancelled) => Err(crate::error::HostShellError::Cancelled),
+            result = SshSession::connect_with_auth_input(
+                host,
+                selected_jump_hosts,
+                stored_hosts,
+                known_hosts,
+                cols,
+                rows,
+                auto_accept_new_keys,
+                auth_input
+                    .as_ref()
+                    .map(|provider| provider as &crate::ssh::session::AuthInputProvider),
+            ) => result,
+        }
     });
+    unregister_connect_cancellation(cancellation_key);
 
     match result {
         Ok(mut handle) => {
+            if let Err(error) = eng.store.persist_known_hosts() {
+                let _ = handle.close();
+                if let Some(cb) = stage_cb {
+                    let fail_evt = StageEvent::now(crate::model::stage::ConnectionStage::Failed {
+                        failed_stage: "HostKeyPersistence".into(),
+                        error_category: "StorageError".into(),
+                        message: format!("Could not persist trusted host keys: {error}"),
+                        suggestion: "Check local storage permissions and reconnect after resolving the issue.".into(),
+                    });
+                    if let Ok(json_str) = serde_json::to_string(&fail_evt) {
+                        if let Ok(c_json) = CString::new(json_str) {
+                            cb(c_json.as_ptr(), user_data_addr as *mut c_void);
+                        }
+                    }
+                }
+                return std::ptr::null_mut();
+            }
+
             let cmd_tx = handle.cmd_tx.clone();
 
             eng.runtime.spawn(async move {
@@ -449,12 +531,67 @@ pub extern "C" fn hostshell_connect_with_auth_input(
             Box::into_raw(Box::new(SessionWrapper { cmd_tx }))
         }
         Err(e) => {
+            if let Err(persist_error) = eng.store.persist_known_hosts() {
+                tracing::warn!("Failed to persist known host keys after connection failure: {persist_error}");
+            }
             if let Some(cb) = stage_cb {
+                let (failed_stage, error_category, suggestion) = match &e {
+                    crate::error::HostShellError::Network(_) => (
+                        "ConnectingTransport",
+                        "NetworkUnreachable",
+                        "Verify network connectivity, address, port, and firewall rules.",
+                    ),
+                    crate::error::HostShellError::Proxy(_) => (
+                        "BastionHop",
+                        "ProxyFailed",
+                        "Check proxy or jump host configuration, credentials, and reachability.",
+                    ),
+                    crate::error::HostShellError::Cloudflare(_) => (
+                        "CloudflareHandshake",
+                        "CloudflareAuthFailed",
+                        "Verify Cloudflare Access credentials and endpoint configuration.",
+                    ),
+                    crate::error::HostShellError::HostKeyRejected { .. } => (
+                        "HostKeyVerifying",
+                        "HostKeyRejected",
+                        "Verify the host fingerprint out of band before connecting.",
+                    ),
+                    crate::error::HostShellError::SshHandshake(_) => (
+                        "SshHandshaking",
+                        "HandshakeFailed",
+                        "Check that the SSH service is reachable and supports compatible algorithms.",
+                    ),
+                    crate::error::HostShellError::AuthenticationFailed { .. } => (
+                        "AuthenticatingUser",
+                        "AuthenticationFailed",
+                        "Check the username, credential, and server authentication policy.",
+                    ),
+                    crate::error::HostShellError::Session(_) => (
+                        "OpeningPty",
+                        "SessionFailed",
+                        "Check server shell/session policy and account permissions.",
+                    ),
+                    crate::error::HostShellError::Config(_) => (
+                        "Initializing",
+                        "ConfigurationError",
+                        "Review the host, jump host, and credential configuration.",
+                    ),
+                    crate::error::HostShellError::Cancelled => (
+                        "Connecting",
+                        "Cancelled",
+                        "Connection attempt was cancelled.",
+                    ),
+                    _ => (
+                        "InitialConnect",
+                        "ConnectError",
+                        "Check connection details and try again.",
+                    ),
+                };
                 let fail_evt = StageEvent::now(crate::model::stage::ConnectionStage::Failed {
-                    failed_stage: "InitialConnect".to_string(),
-                    error_category: "ConnectError".to_string(),
+                    failed_stage: failed_stage.to_string(),
+                    error_category: error_category.to_string(),
                     message: e.to_string(),
-                    suggestion: "Check connection details and try again.".to_string(),
+                    suggestion: suggestion.to_string(),
                 });
                 if let Ok(json_str) = serde_json::to_string(&fail_evt) {
                     if let Ok(c_json) = CString::new(json_str) {

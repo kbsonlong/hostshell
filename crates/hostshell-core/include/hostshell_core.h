@@ -62,6 +62,10 @@ SessionWrapper *hostshell_connect_with_auth_input(
     void *user_data
 );
 
+/* Cancel an in-progress connection associated with the same user_data pointer. */
+void hostshell_cancel_connect(void *user_data);
+void hostshell_finish_connect(void *user_data);
+
 int hostshell_session_write(SessionWrapper *session, const uint8_t *data, size_t len);
 int hostshell_session_resize(SessionWrapper *session, uint32_t cols, uint32_t rows);
 void hostshell_session_close(SessionWrapper *session);

@@ -52,8 +52,31 @@ This is a partial gate and must not be reported as the full three-client baselin
 | macOS desktop app compiles and bundle links core dylib | `scripts/build_macos.sh` |
 | iOS Rust device/simulator libraries and SwiftUI app compile | `scripts/build_ios.sh` + Xcode simulator build |
 
+## M0 connection acceptance matrix
+
+Use this matrix to record automation separately from real-network acceptance. The repository's offline regression gate does not count as staging evidence. Run staging cases only with an isolated test account and record the environment, date, client build, outcome, and sanitized failure stage; never record credentials or terminal contents.
+
+| Connection case | CLI | macOS | iOS | Local automated coverage | Isolated staging evidence |
+|---|---:|---:|---:|---|---|
+| Direct + password | ✓ | ✓ | ✓ | Compile/contract only; no SSH server login | Pending |
+| Direct + private key / saved key | ✓ | ✓ | ✓ | Key parsing/storage coverage is partial; no server login | Pending |
+| Direct + ssh-agent | ✓ | ✓ | Not supported by iOS sandbox | Agent discovery is not an end-to-end auth test | Pending |
+| Direct + keyboard-interactive MFA | ✓ | ✓ | ✓ | No server challenge/response test | Pending |
+| ProxyJump, one hop + each supported auth method | ✓ | ✓ | ✓ | Config parsing and asset linking only | Pending |
+| ProxyJump, multiple hops + per-hop auth | ✓ | ✓ | ✓ | No end-to-end chain test | Pending |
+| Cloudflare Access / Service Token | ✓ | ✓ | ✓ | Client compilation only; no Access handshake | Pending |
+| Generic ProxyCommand | ✓ | ✓ | ✓ | Config import and client compilation only | Pending |
+| Host key: first trust, accepted key, changed key rejection | ✓ | ✓ | ✓ | known_hosts store semantics only | Pending |
+| Cancellation and cleanup during transport, auth, and session startup | ✓ | ✓ | ✓ | No network lifecycle test | Pending |
+| Local TCP and Unix socket forwarding | ✓ | ✓ | ✓ | No end-to-end forwarding test | Pending |
+| DynamicForward (SOCKS5) | ✓ | ✓ | ✓ | No end-to-end forwarding test | Pending |
+| RemoteForward: TCP and Unix socket | ✓ | ✓ | ✓ | No end-to-end forwarding test | Pending |
+| Terminal input/output, resize, shell interaction, remote close | ✓ | ✓ | ✓ | No remote terminal test | Pending |
+
+For each attempted connection, also record whether the UI/CLI reports the expected failure stage and actionable reason for DNS/network, proxy or bastion, Cloudflare authentication, SSH handshake, user authentication, and PTY/shell startup failures. Keep production acceptance pending until each supported case has explicit staging evidence or a documented scope exclusion.
+
 ## Manual release checks
 
-Offline automation cannot prove that real credentials, a live SSH agent, a bastion, Cloudflare Access, or remote terminal behavior works in every environment. Before release, manually verify one direct host, one ProxyJump target, one ProxyCommand/Cloudflare host (if used), agent authentication in a Finder-launched macOS app, terminal keyboard/output, and window/terminal resize. Never put real credentials into fixtures or CI logs.
+Offline automation cannot prove that real credentials, a live SSH agent, a bastion, Cloudflare Access, or remote terminal behavior works in every environment. Before release, work through the matrix above and at minimum verify one direct host, one ProxyJump target, one ProxyCommand/Cloudflare host (if used), agent authentication in a Finder-launched macOS app, terminal keyboard/output, and window/terminal resize. Never put real credentials into fixtures or CI logs.
 
 The suite intentionally does not perform networked logins. Use a dedicated, explicitly approved staging account for that check rather than coupling a normal regression run to production infrastructure.

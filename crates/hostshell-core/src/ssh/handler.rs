@@ -10,6 +10,7 @@ pub struct TargetClientHandler {
     pub hostname: String,
     pub port: u16,
     pub known_hosts: Arc<Mutex<KnownHostsStore>>,
+    pub host_key_rejection: Arc<Mutex<Option<String>>>,
     pub stage_tx: Option<tokio::sync::mpsc::UnboundedSender<StageEvent>>,
     pub auto_accept_new_keys: bool,
     pub(crate) agent: Option<super::agent::AppAgent>,
@@ -143,6 +144,7 @@ impl russh::client::Handler for TargetClientHandler {
                         suggestion: "Check server fingerprint or update known_hosts if the server was legitimately reinstalled.".to_string(),
                     }));
                 }
+                *self.host_key_rejection.lock().unwrap() = Some(fingerprint);
                 return Ok(false);
             }
         }
@@ -171,7 +173,16 @@ impl russh::client::Handler for TargetClientHandler {
             store.add(entry);
             Ok(true)
         } else {
-            Ok(true)
+            *self.host_key_rejection.lock().unwrap() = Some(fingerprint);
+            if let Some(ref tx) = self.stage_tx {
+                let _ = tx.send(StageEvent::now(ConnectionStage::Failed {
+                    failed_stage: "HostKeyVerifying".to_string(),
+                    error_category: "HostKeyUntrusted".to_string(),
+                    message: format!("Host key for {}:{} is not trusted; connection refused.", self.hostname, self.port),
+                    suggestion: "Verify the fingerprint, then enable first-use trust and reconnect.".to_string(),
+                }));
+            }
+            Ok(false)
         }
     }
 }

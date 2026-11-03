@@ -392,7 +392,21 @@ async fn run_interactive_session(
 
     let known_hosts = store.known_hosts_ref();
     let stored_hosts = store.load_hosts().unwrap_or_default();
-    let session = SshSession::connect(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true).await?;
+    let session = match
+        SshSession::connect(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true).await
+    {
+        Ok(session) => {
+            if let Err(error) = store.persist_known_hosts() {
+                let _ = session.close();
+                return Err(Box::new(error));
+            }
+            session
+        }
+        Err(error) => {
+            store.persist_known_hosts()?;
+            return Err(Box::new(error));
+        }
+    };
 
     let mut stage_rx = session.stage_rx;
     let mut output_rx = session.output_rx;

@@ -1,5 +1,33 @@
 import Foundation
 
+public enum TerminalTheme: String, Codable, CaseIterable, Identifiable, Sendable {
+    case dark
+    case light
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .dark: return "深色"
+        case .light: return "浅色"
+        }
+    }
+}
+
+public struct TerminalPreferences: Codable, Equatable, Sendable {
+    public static let fontSizeKey = "terminal.fontSize"
+    public static let themeKey = "terminal.theme"
+    public static let defaultFontSize = 14.0
+
+    public var fontSize: Double
+    public var theme: TerminalTheme
+
+    public init(fontSize: Double = Self.defaultFontSize, theme: TerminalTheme = .dark) {
+        self.fontSize = min(max(fontSize, 10), 24)
+        self.theme = theme
+    }
+}
+
 public enum ProxyMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case direct = "direct"
     case proxyJump = "proxy_jump"

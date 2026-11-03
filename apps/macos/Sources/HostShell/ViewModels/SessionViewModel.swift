@@ -61,6 +61,7 @@ public final class SessionViewModel: ObservableObject {
     private var sessionBridge: SessionHandleBridge?
     private var connectionID = UUID()
     private var terminalSize: (cols: UInt32, rows: UInt32)?
+    private var connectCancellation: ConnectCancellationBridge?
 
     @Published public var isConnecting: Bool = false
     @Published public var isConnected: Bool = false
@@ -149,6 +150,15 @@ public final class SessionViewModel: ObservableObject {
                         }
                     }
                     return response
+                },
+                onConnectStarted: { [weak self] cancellation in
+                    DispatchQueue.main.sync {
+                        guard let self, self.connectionID == attemptID else {
+                            cancellation.cancel()
+                            return
+                        }
+                        self.connectCancellation = cancellation
+                    }
                 }
             )
 
@@ -157,6 +167,7 @@ public final class SessionViewModel: ObservableObject {
                     sess?.close()
                     return
                 }
+                self.connectCancellation = nil
                 if let sess = sess {
                     self.sessionBridge = sess
                     if let size = self.terminalSize { sess.resize(cols: size.cols, rows: size.rows) }
@@ -215,6 +226,8 @@ public final class SessionViewModel: ObservableObject {
 
     public func disconnect() {
         connectionID = UUID()
+        connectCancellation?.cancel()
+        connectCancellation = nil
         authPromptWaiter?.complete(nil)
         authPromptWaiter = nil
         authPromptInfo = nil
