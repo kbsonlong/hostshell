@@ -88,15 +88,29 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent target/HostShell.app dist/HostShell-macos.zip
+          DMG_ROOT="$RUNNER_TEMP/hostshell-dmg-root"
+          mkdir -p "$DMG_ROOT"
+          ditto target/HostShell.app "$DMG_ROOT/HostShell.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          cat > "$DMG_ROOT/安装说明.txt" <<'EOF'
+          安装：将 HostShell.app 拖动到 Applications 图标。
+          首次打开若被 macOS 拦截，请在“系统设置 > 隐私与安全性”中确认打开。
+
+          Install: Drag HostShell.app onto the Applications icon.
+          If macOS blocks the first launch, allow it in System Settings > Privacy & Security.
+          EOF
+          hdiutil create -volname HostShell -srcfolder "$DMG_ROOT" -ov -format UDZO "$RUNNER_TEMP/HostShell-macos.dmg"
+          cp "$RUNNER_TEMP/HostShell-macos.dmg" dist/HostShell-macos.dmg
           tar -C target/release -czf dist/hostshell-cli-macos.tar.gz hostshell-cli
           printf 'version=%s\narchitecture=%s\n' "${GITHUB_REF_NAME#v}" "$(uname -m)" > dist/BUILD-INFO.txt
-          shasum -a 256 dist/HostShell-macos.zip dist/hostshell-cli-macos.tar.gz dist/BUILD-INFO.txt > dist/SHA256SUMS
+          shasum -a 256 dist/HostShell-macos.dmg dist/HostShell-macos.zip dist/hostshell-cli-macos.tar.gz dist/BUILD-INFO.txt > dist/SHA256SUMS
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "${GITHUB_REF_NAME}"
+          dist/HostShell-macos.dmg
           dist/HostShell-macos.zip
           dist/hostshell-cli-macos.tar.gz
           dist/BUILD-INFO.txt
