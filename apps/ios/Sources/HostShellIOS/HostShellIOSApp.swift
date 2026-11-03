@@ -946,6 +946,7 @@ struct HostSessionScreen: View {
     @State private var showingStageDetails = false
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
 
     var body: some View {
         VStack(spacing: 0) {
@@ -969,14 +970,16 @@ struct HostSessionScreen: View {
                 onResize: { cols, rows in
                 terminal.session?.resize(cols: UInt32(cols), rows: UInt32(rows))
             }).background(themeBackground)
-            HStack(spacing: 18) {
-                terminalKeyButton("ESC", bytes: [0x1B])
-                terminalKeyButton("TAB", bytes: [0x09])
-                terminalKeyButton("CTRL-C", bytes: [0x03])
-                terminalKeyButton("CTRL-D", bytes: [0x04])
-                terminalKeyButton("↑", bytes: [0x1B, 0x5B, 0x41])
-                terminalKeyButton("↓", bytes: [0x1B, 0x5B, 0x42])
-            }.padding(9).background(.bar)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 18) {
+                    ForEach(selectedShortcuts) { shortcut in
+                        terminalKeyButton(shortcut.title, bytes: shortcut.bytes)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+            }
+            .background(.bar)
         }
         .navigationTitle(host.name).navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingStageDetails) {
@@ -1060,11 +1063,17 @@ struct HostSessionScreen: View {
     private var themeBackground: SwiftUI.Color {
         (TerminalTheme(rawValue: terminalTheme) ?? .dark) == .dark ? .black : .white
     }
+
+    private var selectedShortcuts: [TerminalShortcut] {
+        let selected = Set(accessoryShortcutIDs.split(separator: ",").map(String.init))
+        return TerminalShortcut.allCases.filter { selected.contains($0.id) }
+    }
 }
 
 private struct IOSTerminalSettingsSheet: View {
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
+    @AppStorage("terminal.accessoryShortcuts") private var accessoryShortcutIDs = TerminalShortcut.defaultIDs.joined(separator: ",")
 
     var body: some View {
         NavigationStack {
@@ -1084,9 +1093,83 @@ private struct IOSTerminalSettingsSheet: View {
                     }
                     .pickerStyle(.segmented)
                 }
+
+                Section("快捷键栏") {
+                    Text("选择要显示在终端下方的按键。按键会立即生效并保存在本机。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    ForEach(TerminalShortcut.allCases) { shortcut in
+                        Toggle(shortcut.title, isOn: shortcutBinding(for: shortcut))
+                    }
+                }
             }
             .navigationTitle("终端设置")
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func shortcutBinding(for shortcut: TerminalShortcut) -> Binding<Bool> {
+        Binding(
+            get: { selectedShortcutIDs.contains(shortcut.id) },
+            set: { isEnabled in
+                var selected = selectedShortcutIDs
+                if isEnabled {
+                    selected.insert(shortcut.id)
+                } else {
+                    selected.remove(shortcut.id)
+                }
+                accessoryShortcutIDs = TerminalShortcut.allCases
+                    .filter { selected.contains($0.id) }
+                    .map(\.id)
+                    .joined(separator: ",")
+            }
+        )
+    }
+
+    private var selectedShortcutIDs: Set<String> {
+        Set(accessoryShortcutIDs.split(separator: ",").map(String.init))
+    }
+}
+
+private enum TerminalShortcut: String, CaseIterable, Identifiable {
+    case escape, tab, controlC, controlD, controlA, controlE, controlL, controlZ
+    case left, up, down, right
+
+    static let defaultIDs = ["escape", "tab", "controlC", "controlD", "up", "down"]
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .escape: return "Esc"
+        case .tab: return "Tab"
+        case .controlC: return "Ctrl-C"
+        case .controlD: return "Ctrl-D"
+        case .controlA: return "Ctrl-A"
+        case .controlE: return "Ctrl-E"
+        case .controlL: return "Ctrl-L"
+        case .controlZ: return "Ctrl-Z"
+        case .left: return "←"
+        case .up: return "↑"
+        case .down: return "↓"
+        case .right: return "→"
+        }
+    }
+
+    var bytes: [UInt8] {
+        switch self {
+        case .escape: return [0x1B]
+        case .tab: return [0x09]
+        case .controlC: return [0x03]
+        case .controlD: return [0x04]
+        case .controlA: return [0x01]
+        case .controlE: return [0x05]
+        case .controlL: return [0x0C]
+        case .controlZ: return [0x1A]
+        case .left: return [0x1B, 0x5B, 0x44]
+        case .up: return [0x1B, 0x5B, 0x41]
+        case .down: return [0x1B, 0x5B, 0x42]
+        case .right: return [0x1B, 0x5B, 0x43]
         }
     }
 }
