@@ -1066,16 +1066,16 @@ struct HostSessionScreen: View {
                         echo: echo
                     )
                     let waiter = IOSAuthPromptWaiter()
-                    DispatchQueue.main.sync {
+                    DispatchQueue.main.async {
                         terminal.beginAuthPrompt(info, waiter: waiter)
                     }
                     let response = waiter.wait()
-                    DispatchQueue.main.sync {
+                    DispatchQueue.main.async {
                         terminal.endAuthPrompt(info.id)
                     }
                     return response
                 }, onConnectStarted: { cancellation in
-                    DispatchQueue.main.sync {
+                    DispatchQueue.main.async {
                         guard connectionAttempt == attemptID else {
                             cancellation.cancel()
                             return
