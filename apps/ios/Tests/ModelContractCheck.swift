@@ -120,12 +120,15 @@ enum IOSModelContractCheck {
         ].joined(separator: "\n")
         let passwordLine = ["PASS", "WORD"].joined() + "=example-value"
         let authLine = ["Authoriza", "tion: Bearer example-token"].joined()
+        let bearerAssignment = ["AUTH", "ORIZATION"].joined() + "=Bearer example-token"
+        let jsonCredentialLine = "\"" + ["API", "_", "KEY"].joined() + "\":\"example-json-key\""
         let cookieLine = ["Set-", "Cookie: session=example-cookie"].joined()
         let redactedContext = AIProviderSettings.redactSensitiveText(
-            [passwordLine, authLine, cookieLine, privateKeyFixture].joined(separator: "\n")
+            [passwordLine, authLine, bearerAssignment, jsonCredentialLine, cookieLine, privateKeyFixture].joined(separator: "\n")
         )
         precondition(!redactedContext.contains("example-value"))
         precondition(!redactedContext.contains("example-token"))
+        precondition(!redactedContext.contains("example-json-key"))
         precondition(!redactedContext.contains("example-cookie"))
         precondition(!redactedContext.contains("fixture-data"))
         precondition(redactedContext.contains("[私钥内容已脱敏]"))

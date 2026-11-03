@@ -44,7 +44,7 @@ enum AIProviderSettings {
         )
         return replacingMatches(
             in: redacted,
-            pattern: #"(?i)([A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)[A-Za-z0-9_-]*[ \t]*[:=][ \t]*)(\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"#,
+            pattern: #"(?i)(["']?[A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)[A-Za-z0-9_-]*["']?[ \t]*[:=][ \t]*)(\"[^\"\r\n]*\"|'[^'\r\n]*'|Bearer[ \t]+\S+|[^\s,;]+)"#,
             template: "$1[已脱敏]"
         )
     }
