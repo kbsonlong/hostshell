@@ -3,9 +3,15 @@ import AppKit
 import SwiftTerm
 
 private final class HostShellMacTerminalView: SwiftTerm.TerminalView {
-    var onSendSelectionToAI: ((String) -> Void)?
+    var onSendSelectionToAI: ((String) -> Void)? {
+        didSet { menu = makeContextMenu() }
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        makeContextMenu()
+    }
+
+    private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         let copy = NSMenuItem(title: "复制", action: #selector(copy(_:)), keyEquivalent: "")
         copy.target = self
@@ -14,7 +20,7 @@ private final class HostShellMacTerminalView: SwiftTerm.TerminalView {
 
         let askAI = NSMenuItem(title: "发送选中内容给 AI 助手", action: #selector(sendSelectionToAI(_:)), keyEquivalent: "")
         askAI.target = self
-        askAI.isEnabled = onSendSelectionToAI != nil && !(getSelection()?.isEmpty ?? true)
+        askAI.isEnabled = onSendSelectionToAI != nil
         menu.addItem(askAI)
         return menu
     }
@@ -161,6 +167,7 @@ public struct TerminalView: View {
     @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
     @State private var showingAIAssistant = false
     @State private var selectedTextForAI: String?
+    @State private var aiMessages: [AIChatMessage] = []
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -171,7 +178,8 @@ public struct TerminalView: View {
     public let onClose: () -> Void
 
     public var body: some View {
-        VStack(spacing: 0) {
+        HSplitView {
+          VStack(spacing: 0) {
             // Header Bar
             HStack {
                 HStack(spacing: 8) {
@@ -235,13 +243,27 @@ public struct TerminalView: View {
                 } : nil
             )
                 .ignoresSafeArea(edges: .bottom)
-        }
-        .sheet(isPresented: $showingAIAssistant) {
-            AIAssistantView(
-                terminalOutput: sessionVM.recentTerminalOutputText,
-                selectedText: selectedTextForAI
-            )
-                .frame(minWidth: 560, minHeight: 500)
+          }
+          if showingAIAssistant {
+              VStack(spacing: 0) {
+                  HStack {
+                      Text("AI 助手").font(.headline)
+                      Spacer()
+                      Button("隐藏") { showingAIAssistant = false }
+                          .controlSize(.small)
+                  }
+                  .padding(.horizontal, 12)
+                  .padding(.vertical, 8)
+                  Divider()
+                  AIAssistantView(
+                      terminalOutput: sessionVM.recentTerminalOutputText,
+                      selectedText: selectedTextForAI,
+                      messages: $aiMessages,
+                      onClose: { showingAIAssistant = false }
+                  )
+              }
+              .frame(minWidth: 380, idealWidth: 440, minHeight: 500)
+          }
         }
     }
 

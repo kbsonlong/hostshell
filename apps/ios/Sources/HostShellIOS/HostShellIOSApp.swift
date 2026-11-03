@@ -955,6 +955,7 @@ struct HostSessionScreen: View {
     @State private var showingStageDetails = false
     @State private var showingAIAssistant = false
     @State private var selectedTextForAI: String?
+    @State private var aiMessages: [AIChatMessage] = []
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -1016,7 +1017,7 @@ struct HostSessionScreen: View {
                 } label: {
                     Label("发送选中内容给 AI 助手", systemImage: "sparkles")
                 }
-                .disabled(!aiEnabled || terminal.selectedTerminalText?.isEmpty != false)
+                .disabled(!aiEnabled)
             }
             .background(themeBackground)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1055,7 +1056,8 @@ struct HostSessionScreen: View {
         .sheet(isPresented: $showingAIAssistant) {
             AIAssistantView(
                 terminalOutput: terminal.recentOutputText,
-                selectedText: selectedTextForAI
+                selectedText: selectedTextForAI,
+                messages: $aiMessages
             )
         }
         .task(id: connectionAttempt) {

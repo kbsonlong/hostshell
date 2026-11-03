@@ -15,9 +15,10 @@ struct AIAssistantView: View {
 
     let terminalOutput: String
     let selectedText: String?
+    @Binding var messages: [AIChatMessage]
+    var onClose: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @State private var messages: [AIChatMessage] = []
     @State private var question = ""
     @State private var includeTerminalOutput = false
     @State private var terminalContext = ""
@@ -122,7 +123,9 @@ struct AIAssistantView: View {
             .navigationTitle("AI 助手")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button("关闭") {
+                        if let onClose { onClose() } else { dismiss() }
+                    }
                 }
             }
             .sheet(isPresented: $showingPreview) {

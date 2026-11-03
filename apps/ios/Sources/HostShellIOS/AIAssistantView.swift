@@ -15,9 +15,9 @@ struct AIAssistantView: View {
 
     let terminalOutput: String
     let selectedText: String?
+    @Binding var messages: [AIChatMessage]
 
     @Environment(\.dismiss) private var dismiss
-    @State private var messages: [AIChatMessage] = []
     @State private var question = ""
     @State private var includeTerminalOutput = false
     @State private var terminalContext = ""
