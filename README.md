@@ -47,11 +47,10 @@ hostshell/
 推送 `v*` 版本标签后，GitHub Actions 会先通过完整回归，再构建 macOS App 与 CLI 并附加到对应的 GitHub Release。
 
 - [所有版本与下载资源](https://github.com/kbsonlong/hostshell/releases)
-- [最新 macOS App（DMG，拖到 Applications 安装）](https://github.com/kbsonlong/hostshell/releases/latest/download/HostShell-macos.dmg)
-- [macOS App（ZIP 备用包）](https://github.com/kbsonlong/hostshell/releases/latest/download/HostShell-macos.zip)
-- [最新 macOS CLI（tar.gz）](https://github.com/kbsonlong/hostshell/releases/latest/download/hostshell-cli-macos.tar.gz)
+- 每个版本分别提供 `arm64` 与 `amd64` 的 macOS App（DMG/ZIP）和 CLI（tar.gz）。
+- DMG 打开后可将 HostShell 拖到 Applications 安装。
 
-每个版本的 Release 页面也提供 `BUILD-INFO.txt` 与 `SHA256SUMS`。版本固定下载地址格式为 `https://github.com/kbsonlong/hostshell/releases/download/<版本标签>/<资源文件名>`。
+Release 页面还提供各架构的构建信息与 SHA256 校验文件。版本固定下载地址格式为 `https://github.com/kbsonlong/hostshell/releases/download/<版本标签>/<资源文件名>`，例如 `HostShell-macos-arm64.dmg` 或 `hostshell-cli-macos-amd64.tar.gz`。
 
 ## 快速开始
 

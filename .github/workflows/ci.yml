@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v* tag to rebuild and publish through CI (leave empty for regression only)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +27,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           persist-credentials: false
 
       - name: Install stable Rust
@@ -55,19 +61,28 @@ jobs:
         if: github.event_name == 'push'
         run: git show --check --oneline "${{ github.sha }}"
 
-  release:
-    name: Build and publish macOS app + CLI
-    if: startsWith(github.ref, 'refs/tags/v')
+  release-build:
+    name: Build macOS + CLI (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: regression
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            expected_arch: arm64
+          - arch: amd64
+            runner: macos-15-intel
+            expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
-    permissions:
-      contents: write
 
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -79,8 +94,19 @@ jobs:
 
       - name: Verify release tag and set app version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            echo "Release tag must start with v: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ "$(uname -m)" != "$EXPECTED_ARCH" ]]; then
+            echo "Runner architecture $(uname -m) does not match $EXPECTED_ARCH" >&2
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
           CLI_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "hostshell-cli"))')"
           if [[ "$VERSION" != "$CLI_VERSION" ]]; then
             echo "Tag version $VERSION does not match hostshell-cli Cargo version $CLI_VERSION" >&2
@@ -97,11 +123,16 @@ jobs:
 
       - name: Package release assets
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent target/HostShell.app dist/HostShell-macos.zip
-          DMG_ROOT="$RUNNER_TEMP/hostshell-dmg-root"
+          APP_NAME="HostShell-macos-${RELEASE_ARCH}"
+          CLI_NAME="hostshell-cli-macos-${RELEASE_ARCH}"
+          ditto -c -k --sequesterRsrc --keepParent target/HostShell.app "dist/${APP_NAME}.zip"
+          DMG_ROOT="$RUNNER_TEMP/hostshell-dmg-root-${RELEASE_ARCH}"
           mkdir -p "$DMG_ROOT"
           ditto target/HostShell.app "$DMG_ROOT/HostShell.app"
           ln -s /Applications "$DMG_ROOT/Applications"
@@ -112,22 +143,56 @@ jobs:
           Install: Drag HostShell.app onto the Applications icon.
           If macOS blocks the first launch, allow it in System Settings > Privacy & Security.
           EOF
-          hdiutil create -volname HostShell -srcfolder "$DMG_ROOT" -ov -format UDZO "$RUNNER_TEMP/HostShell-macos.dmg"
-          cp "$RUNNER_TEMP/HostShell-macos.dmg" dist/HostShell-macos.dmg
-          tar -C target/release -czf dist/hostshell-cli-macos.tar.gz hostshell-cli
-          printf 'version=%s\narchitecture=%s\n' "${GITHUB_REF_NAME#v}" "$(uname -m)" > dist/BUILD-INFO.txt
-          shasum -a 256 dist/HostShell-macos.dmg dist/HostShell-macos.zip dist/hostshell-cli-macos.tar.gz dist/BUILD-INFO.txt > dist/SHA256SUMS
+          hdiutil create -volname "HostShell ${RELEASE_ARCH}" -srcfolder "$DMG_ROOT" -ov -format UDZO "$RUNNER_TEMP/${APP_NAME}.dmg"
+          cp "$RUNNER_TEMP/${APP_NAME}.dmg" "dist/${APP_NAME}.dmg"
+          tar -C target/release -czf "dist/${CLI_NAME}.tar.gz" hostshell-cli
+          printf 'version=%s\narchitecture=%s\n' "${RELEASE_TAG#v}" "$RELEASE_ARCH" > "dist/BUILD-INFO-${RELEASE_ARCH}.txt"
+          shasum -a 256 dist/* > "dist/SHA256SUMS-${RELEASE_ARCH}"
 
-      - name: Publish GitHub Release
+      - name: Upload architecture assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: hostshell-release-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    needs: [regression, release-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release metadata
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download both architecture builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hostshell-release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          dist/HostShell-macos.dmg
-          dist/HostShell-macos.zip
-          dist/hostshell-cli-macos.tar.gz
-          dist/BUILD-INFO.txt
-          dist/SHA256SUMS
-          --title "HostShell ${GITHUB_REF_NAME}"
-          --generate-notes
-          --verify-tag
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --title "HostShell ${RELEASE_TAG}" \
+              --generate-notes \
+              --verify-tag
+          fi
