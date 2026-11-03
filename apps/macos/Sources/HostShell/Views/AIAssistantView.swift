@@ -71,6 +71,12 @@ struct AIAssistantView: View {
 
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
+                    if !aiEnabled {
+                        Label("请先在“设置与诊断 > AI 助手”中启用 AI 并配置 API Key。", systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     TextField("输入问题", text: $question, axis: .vertical)
                         .lineLimit(2...5)
                         .textFieldStyle(.roundedBorder)
@@ -109,7 +115,7 @@ struct AIAssistantView: View {
                             showingPreview = true
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                        .disabled(!aiEnabled || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
                     }
                 }
                 .padding()

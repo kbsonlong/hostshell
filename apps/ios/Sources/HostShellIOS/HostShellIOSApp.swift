@@ -1017,7 +1017,6 @@ struct HostSessionScreen: View {
                 } label: {
                     Label("发送选中内容给 AI 助手", systemImage: "sparkles")
                 }
-                .disabled(!aiEnabled)
             }
             .background(themeBackground)
             ScrollView(.horizontal, showsIndicators: false) {

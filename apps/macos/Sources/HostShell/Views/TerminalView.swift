@@ -11,6 +11,13 @@ private final class HostShellMacTerminalView: SwiftTerm.TerminalView {
         makeContextMenu()
     }
 
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(sendSelectionToAI(_:)) {
+            return onSendSelectionToAI != nil && !(getSelection()?.isEmpty ?? true)
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         let copy = NSMenuItem(title: "复制", action: #selector(copy(_:)), keyEquivalent: "")
@@ -20,7 +27,7 @@ private final class HostShellMacTerminalView: SwiftTerm.TerminalView {
 
         let askAI = NSMenuItem(title: "发送选中内容给 AI 助手", action: #selector(sendSelectionToAI(_:)), keyEquivalent: "")
         askAI.target = self
-        askAI.isEnabled = onSendSelectionToAI != nil
+        askAI.isEnabled = onSendSelectionToAI != nil && !(getSelection()?.isEmpty ?? true)
         menu.addItem(askAI)
         return menu
     }
@@ -237,10 +244,10 @@ public struct TerminalView: View {
             SwiftTermRepresentable(
                 sessionVM: sessionVM,
                 preferences: terminalPreferences,
-                onSelectedTextForAI: aiEnabled ? { text in
+                onSelectedTextForAI: { text in
                     selectedTextForAI = text
                     showingAIAssistant = true
-                } : nil
+                }
             )
                 .ignoresSafeArea(edges: .bottom)
           }
