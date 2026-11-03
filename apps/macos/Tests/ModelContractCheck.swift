@@ -74,6 +74,38 @@ enum ModelContractCheck {
         let terminalSettings = connectObject["terminal_settings"] as! [String: Any]
         precondition(terminalSettings["term_type"] as? String == "tmux-256color")
         precondition(terminalSettings["keepalive_seconds"] as? Int == 5)
+        let modelsURL = try AIProviderSettings.endpoint(
+            baseURL: "https://ai.example.test/v1/",
+            path: "/models"
+        )
+        precondition(modelsURL.absoluteString == "https://ai.example.test/v1/models")
+        do {
+            _ = try AIProviderSettings.endpoint(baseURL: "http://ai.example.test/v1", path: "models")
+            preconditionFailure("Remote HTTP AI providers must be rejected")
+        } catch AIProviderError.invalidBaseURL {
+            // Expected: non-loopback provider endpoints must use HTTPS.
+        }
+        let client = OpenAICompatibleProviderClient(baseURL: "https://ai.example.test/v1", apiKey: "contract-test-key")
+        let request = try client.makeRequest(
+            model: "example-model",
+            messages: [AIChatMessage(role: "user", content: "explain this error")]
+        )
+        precondition(request.url?.absoluteString == "https://ai.example.test/v1/chat/completions")
+        precondition(request.httpMethod == "POST")
+        precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer contract-test-key")
+        let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        precondition(body["model"] as? String == "example-model")
+        let messages = body["messages"] as! [[String: String]]
+        precondition(messages.first?["content"] == "explain this error")
+        do {
+            _ = try client.makeRequest(
+                model: "example-model",
+                messages: [AIChatMessage(role: "user", content: String(repeating: "x", count: 70_000))]
+            )
+            preconditionFailure("Oversized AI request must be rejected")
+        } catch AIProviderError.contextTooLong {
+            // Expected: request body is capped at 64 KiB.
+        }
         print("macOS wire model + terminal settings contract OK")
     }
 }

@@ -32,7 +32,7 @@ JUMPS="$(HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/ho
 [ "$JUMPS" -eq 1 ] || fail "re-import duplicated jump hosts (count=$JUMPS)"
 
 step "macOS Swift wire-model contract"
-swiftc "$ROOT/apps/macos/Sources/HostShell/Core/Models.swift" "$ROOT/apps/macos/Tests/ModelContractCheck.swift" -o "$SCRATCH/macos-model-check"
+swiftc "$ROOT/apps/macos/Sources/HostShell/Core/Models.swift" "$ROOT/apps/macos/Sources/HostShell/Core/AIProvider.swift" "$ROOT/apps/macos/Tests/ModelContractCheck.swift" -framework Security -o "$SCRATCH/macos-model-check"
 "$SCRATCH/macos-model-check"
 swiftc "$ROOT/apps/ios/Sources/HostShellIOS/Models.swift" "$ROOT/apps/ios/Sources/HostShellIOS/AIProvider.swift" "$ROOT/apps/ios/Tests/ModelContractCheck.swift" -framework Security -o "$SCRATCH/ios-model-check"
 "$SCRATCH/ios-model-check"

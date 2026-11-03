@@ -1,0 +1,191 @@
+import Foundation
+import Security
+
+enum AIProviderSettings {
+    static let enabledKey = "ai.enabled"
+    static let baseURLKey = "ai.openAICompatible.baseURL"
+    static let modelKey = "ai.openAICompatible.model"
+    static let defaultBaseURL = "https://api.openai.com/v1"
+
+    static func endpoint(baseURL: String, path: String) throws -> URL {
+        guard var components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(),
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else {
+            throw AIProviderError.invalidBaseURL
+        }
+        let isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
+        guard scheme == "https" || (scheme == "http" && isLoopback) else {
+            throw AIProviderError.invalidBaseURL
+        }
+        let root = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpoint = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = "/" + [root, endpoint].filter { !$0.isEmpty }.joined(separator: "/")
+        guard let url = components.url else { throw AIProviderError.invalidBaseURL }
+        return url
+    }
+
+    static func redactSensitiveText(_ text: String) -> String {
+        var result = replacing(
+            text,
+            pattern: #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"#,
+            template: "[私钥内容已脱敏]"
+        )
+        result = replacing(
+            result,
+            pattern: #"(?im)(^\s*(?:authorization|cookie|set-cookie)\s*:\s*).+$"#,
+            template: "$1[已脱敏]"
+        )
+        return replacing(
+            result,
+            pattern: #"(?i)(["']?[A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)[A-Za-z0-9_-]*["']?[ \t]*[:=][ \t]*)(\"[^\"\r\n]*\"|'[^'\r\n]*'|Bearer[ \t]+\S+|[^\s,;]+)"#,
+            template: "$1[已脱敏]"
+        )
+    }
+
+    private static func replacing(_ text: String, pattern: String, template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+    }
+}
+
+enum AIProviderError: LocalizedError {
+    case invalidBaseURL, emptyAPIKey, invalidResponse, emptyModel, emptyMessages, emptyCompletion
+    case contextTooLong, requestTimedOut, networkUnavailable, httpStatus(Int), keychain(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidBaseURL: return "API 地址必须使用 HTTPS；仅允许 localhost 使用 HTTP。"
+        case .emptyAPIKey: return "请先填写并保存 API Key。"
+        case .invalidResponse: return "服务返回的数据格式无法识别。"
+        case .emptyModel: return "请先选择或输入模型 ID。"
+        case .emptyMessages: return "请输入要咨询的问题。"
+        case .emptyCompletion: return "模型没有返回可显示的回答。"
+        case .contextTooLong: return "当前对话内容超过 64 KiB 上限。请关闭 AI 助手并重新开始对话。"
+        case .requestTimedOut: return "AI 请求超时。请检查网络后重试。"
+        case .networkUnavailable: return "无法连接 AI 服务。请检查网络和服务地址后重试。"
+        case .httpStatus(let status): return "服务请求失败（HTTP \(status)）。请检查地址、Key 和服务状态。"
+        case .keychain(let status): return "无法安全保存 API Key（Keychain 错误 \(status)）。"
+        }
+    }
+}
+
+enum AIProviderKeychain {
+    private static let service = "com.hostshell.macos.ai-provider"
+    private static let account = "openai-compatible-api-key"
+
+    static func loadAPIKey() -> String? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func saveAPIKey(_ key: String) throws {
+        let data = Data(key.utf8)
+        let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecSuccess { return }
+        guard status == errSecItemNotFound else { throw AIProviderError.keychain(status) }
+        var query = baseQuery
+        query[kSecValueData as String] = data
+        let addStatus = SecItemAdd(query as CFDictionary, nil)
+        guard addStatus == errSecSuccess else { throw AIProviderError.keychain(addStatus) }
+    }
+
+    private static var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+}
+
+struct AIChatMessage: Codable, Equatable, Sendable {
+    let role: String
+    let content: String
+}
+
+struct OpenAICompatibleProviderClient {
+    private static let maximumRequestBodyBytes = 64 * 1024
+    let baseURL: String
+    let apiKey: String
+
+    func listModels() async throws -> [String] {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIProviderError.emptyAPIKey
+        }
+        let url = try AIProviderSettings.endpoint(baseURL: baseURL, path: "models")
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await fetch(request)
+        guard let response = response as? HTTPURLResponse else { throw AIProviderError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIProviderError.httpStatus(response.statusCode) }
+        let result = try JSONDecoder().decode(ModelsResponse.self, from: data).data.map(\.id).filter { !$0.isEmpty }
+        guard !result.isEmpty else { throw AIProviderError.invalidResponse }
+        return Array(Set(result)).sorted()
+    }
+
+    func complete(model: String, messages: [AIChatMessage]) async throws -> String {
+        let request = try makeRequest(model: model, messages: messages)
+        let (data, response) = try await fetch(request)
+        guard let response = response as? HTTPURLResponse else { throw AIProviderError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIProviderError.httpStatus(response.statusCode) }
+        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
+        guard let content = result.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty else { throw AIProviderError.emptyCompletion }
+        return content
+    }
+
+    func makeRequest(model: String, messages: [AIChatMessage]) throws -> URLRequest {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIProviderError.emptyAPIKey }
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIProviderError.emptyModel }
+        guard messages.contains(where: { $0.role == "user" && !$0.content.isEmpty }) else {
+            throw AIProviderError.emptyMessages
+        }
+        let url = try AIProviderSettings.endpoint(baseURL: baseURL, path: "chat/completions")
+        var request = URLRequest(url: url, timeoutInterval: 45)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let body = try JSONEncoder().encode(ChatRequest(model: model, messages: messages))
+        guard body.count <= Self.maximumRequestBodyBytes else { throw AIProviderError.contextTooLong }
+        request.httpBody = body
+        return request
+    }
+
+    private func fetch(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await URLSession.shared.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw AIProviderError.requestTimedOut
+        } catch let error as URLError where [
+            .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .dnsLookupFailed
+        ].contains(error.code) {
+            throw AIProviderError.networkUnavailable
+        }
+    }
+
+    private struct ChatRequest: Encodable {
+        let model: String
+        let messages: [AIChatMessage]
+        let temperature = 0.2
+    }
+    private struct ModelsResponse: Decodable {
+        struct Model: Decodable { let id: String }
+        let data: [Model]
+    }
+    private struct ChatResponse: Decodable {
+        struct Choice: Decodable {
+            struct Message: Decodable { let content: String }
+            let message: Message
+        }
+        let choices: [Choice]
+    }
+}

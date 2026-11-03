@@ -9,6 +9,13 @@ public struct SettingsView: View {
     @AppStorage(TerminalPreferences.emulationKey) private var terminalEmulation = TerminalEmulation.xterm256color.rawValue
     @AppStorage(TerminalPreferences.scrollbackLinesKey) private var terminalScrollbackLines = TerminalPreferences.defaultScrollbackLines
     @AppStorage(TerminalPreferences.keepaliveSecondsKey) private var terminalKeepaliveSeconds = TerminalPreferences.defaultKeepaliveSeconds
+    @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
+    @AppStorage(AIProviderSettings.baseURLKey) private var aiBaseURL = AIProviderSettings.defaultBaseURL
+    @AppStorage(AIProviderSettings.modelKey) private var aiModel = ""
+    @State private var aiAPIKey = ""
+    @State private var availableAIModels: [String] = []
+    @State private var refreshingAIModels = false
+    @State private var aiSettingsMessage: String?
 
     private var fontSizeBinding: Binding<Double> {
         Binding(
@@ -83,19 +90,94 @@ public struct SettingsView: View {
 
     private var aiSection: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("macOS AI 助手尚未接入", systemImage: "sparkles")
-                    .font(.headline)
-                Text("当前只读 AI 助手和服务配置可在 iOS 端使用。macOS 版本接入后，服务地址、模型和安全凭据会集中放在此分类。")
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("启用 AI 助手", isOn: $aiEnabled)
+                Text("只读分析终端问题，不会执行命令。终端内容不会自动发送；每次发送前都可检查和编辑。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                TextField("兼容 API 地址", text: $aiBaseURL)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("API Key（保存在 macOS Keychain）", text: $aiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("保存 API Key", action: saveAIAPIKey)
+                    if !aiAPIKey.isEmpty {
+                        Text("Key 已载入或已填写")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                TextField("模型 ID", text: $aiModel)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    if availableAIModels.isEmpty {
+                        Text("可手动输入模型 ID，或刷新服务模型列表。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("可用模型", selection: $aiModel) {
+                            ForEach(availableAIModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                        .frame(maxWidth: 280)
+                    }
+                    Spacer()
+                    Button {
+                        refreshAIModels()
+                    } label: {
+                        if refreshingAIModels {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("刷新模型", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(refreshingAIModels)
+                }
+                if let aiSettingsMessage {
+                    Text(aiSettingsMessage)
+                        .font(.caption)
+                        .foregroundStyle(aiSettingsMessage.hasPrefix("已") ? .green : .red)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 6)
+            .task {
+                if aiAPIKey.isEmpty {
+                    aiAPIKey = AIProviderKeychain.loadAPIKey() ?? ""
+                }
+            }
         } label: {
             Label("AI 助手", systemImage: "sparkles")
                 .font(.headline)
+        }
+    }
+
+    private func saveAIAPIKey() {
+        do {
+            try AIProviderKeychain.saveAPIKey(aiAPIKey)
+            aiSettingsMessage = "已安全保存 API Key。"
+        } catch {
+            aiSettingsMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshAIModels() {
+        refreshingAIModels = true
+        aiSettingsMessage = nil
+        Task {
+            do {
+                let key = aiAPIKey.isEmpty ? (AIProviderKeychain.loadAPIKey() ?? "") : aiAPIKey
+                availableAIModels = try await OpenAICompatibleProviderClient(baseURL: aiBaseURL, apiKey: key).listModels()
+                if !availableAIModels.contains(aiModel), let first = availableAIModels.first {
+                    aiModel = first
+                }
+                aiSettingsMessage = "已加载 \(availableAIModels.count) 个模型。"
+            } catch {
+                aiSettingsMessage = error.localizedDescription
+            }
+            refreshingAIModels = false
         }
     }
 
