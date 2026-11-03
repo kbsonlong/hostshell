@@ -18,6 +18,8 @@ public struct MainView: View {
             switch appVM.selectedCategory {
             case .hosts:
                 HostListView(appVM: appVM)
+            case .localTerminal:
+                LocalTerminalHomeView()
             case .jumpHosts:
                 JumpHostListView(appVM: appVM)
             case .keys:

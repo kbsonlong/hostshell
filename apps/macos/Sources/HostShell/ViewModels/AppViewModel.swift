@@ -3,6 +3,7 @@ import Combine
 
 public enum NavigationCategory: String, CaseIterable, Identifiable {
     case hosts = "主机列表"
+    case localTerminal = "本地终端"
     case jumpHosts = "跳板机资产库"
     case keys = "证书管理"
     case settings = "设置与诊断"
@@ -12,6 +13,7 @@ public enum NavigationCategory: String, CaseIterable, Identifiable {
     public var icon: String {
         switch self {
         case .hosts: return "server.rack"
+        case .localTerminal: return "terminal"
         case .jumpHosts: return "arrow.triangle.branch"
         case .keys: return "key.fill"
         case .settings: return "gearshape"
