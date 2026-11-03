@@ -2,12 +2,36 @@ import SwiftUI
 import AppKit
 import SwiftTerm
 
+private final class HostShellMacTerminalView: SwiftTerm.TerminalView {
+    var onSendSelectionToAI: ((String) -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let copy = NSMenuItem(title: "复制", action: #selector(copy(_:)), keyEquivalent: "")
+        copy.target = self
+        copy.isEnabled = getSelection() != nil
+        menu.addItem(copy)
+
+        let askAI = NSMenuItem(title: "发送选中内容给 AI 助手", action: #selector(sendSelectionToAI(_:)), keyEquivalent: "")
+        askAI.target = self
+        askAI.isEnabled = onSendSelectionToAI != nil && !(getSelection()?.isEmpty ?? true)
+        menu.addItem(askAI)
+        return menu
+    }
+
+    @objc private func sendSelectionToAI(_ sender: Any?) {
+        guard let selection = getSelection(), !selection.isEmpty else { return }
+        onSendSelectionToAI?(selection)
+    }
+}
+
 // ── SwiftTerm bridge ─────────────────────────────────────────────────────────
 
 /// Wraps SwiftTerm's AppKit TerminalView for SwiftUI and wires it to the SSH session.
 struct SwiftTermRepresentable: NSViewRepresentable {
     @ObservedObject var sessionVM: SessionViewModel
     let preferences: TerminalPreferences
+    let onSelectedTextForAI: ((String) -> Void)?
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
         // SwiftTerm derives its initial rows and columns from the frame.
@@ -16,11 +40,12 @@ struct SwiftTermRepresentable: NSViewRepresentable {
             cursorStyle: swiftCursorStyle,
             scrollback: preferences.scrollbackLines
         )
-        let tv = SwiftTerm.TerminalView(
+        let tv = HostShellMacTerminalView(
             frame: CGRect(x: 0, y: 0, width: 700, height: 460),
             font: terminalFont,
             options: options
         )
+        tv.onSendSelectionToAI = onSelectedTextForAI
         applyAppearance(to: tv)
         tv.terminalDelegate = context.coordinator
         return tv
@@ -28,6 +53,7 @@ struct SwiftTermRepresentable: NSViewRepresentable {
 
     func updateNSView(_ tv: SwiftTerm.TerminalView, context: Context) {
         context.coordinator.sessionVM = sessionVM
+        (tv as? HostShellMacTerminalView)?.onSendSelectionToAI = onSelectedTextForAI
         applyAppearance(to: tv)
         // Drain raw SSH output into the terminal emulator
         if let data = sessionVM.takePendingOutput() {
@@ -134,6 +160,7 @@ public struct TerminalView: View {
     @ObservedObject var sessionVM: SessionViewModel
     @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
     @State private var showingAIAssistant = false
+    @State private var selectedTextForAI: String?
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -169,6 +196,7 @@ public struct TerminalView: View {
 
                 if aiEnabled {
                     Button {
+                        selectedTextForAI = nil
                         showingAIAssistant = true
                     } label: {
                         Label("AI 助手", systemImage: "sparkles")
@@ -198,11 +226,21 @@ public struct TerminalView: View {
             Divider()
 
             // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
-            SwiftTermRepresentable(sessionVM: sessionVM, preferences: terminalPreferences)
+            SwiftTermRepresentable(
+                sessionVM: sessionVM,
+                preferences: terminalPreferences,
+                onSelectedTextForAI: aiEnabled ? { text in
+                    selectedTextForAI = text
+                    showingAIAssistant = true
+                } : nil
+            )
                 .ignoresSafeArea(edges: .bottom)
         }
         .sheet(isPresented: $showingAIAssistant) {
-            AIAssistantView(terminalOutput: sessionVM.recentTerminalOutputText)
+            AIAssistantView(
+                terminalOutput: sessionVM.recentTerminalOutputText,
+                selectedText: selectedTextForAI
+            )
                 .frame(minWidth: 560, minHeight: 500)
         }
     }

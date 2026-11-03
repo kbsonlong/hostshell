@@ -954,6 +954,7 @@ struct HostSessionScreen: View {
     @State private var showingTerminalSettings = false
     @State private var showingStageDetails = false
     @State private var showingAIAssistant = false
+    @State private var selectedTextForAI: String?
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -978,7 +979,10 @@ struct HostSessionScreen: View {
                 .font(.caption)
                 .accessibilityLabel("终端设置")
                 if aiEnabled {
-                    Button { showingAIAssistant = true } label: {
+                    Button {
+                        selectedTextForAI = nil
+                        showingAIAssistant = true
+                    } label: {
                         Image(systemName: "sparkles")
                     }
                     .font(.caption)
@@ -1003,7 +1007,18 @@ struct HostSessionScreen: View {
                 preferences: terminalPreferences,
                 onResize: { cols, rows in
                 terminal.session?.resize(cols: UInt32(cols), rows: UInt32(rows))
-            }).background(themeBackground)
+            })
+            .contextMenu {
+                Button {
+                    guard let text = terminal.selectedTerminalText, !text.isEmpty else { return }
+                    selectedTextForAI = text
+                    showingAIAssistant = true
+                } label: {
+                    Label("发送选中内容给 AI 助手", systemImage: "sparkles")
+                }
+                .disabled(!aiEnabled || terminal.selectedTerminalText?.isEmpty != false)
+            }
+            .background(themeBackground)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 18) {
                     ForEach(selectedShortcuts) { shortcut in
@@ -1038,7 +1053,10 @@ struct HostSessionScreen: View {
             IOSTerminalSettingsSheet()
         }
         .sheet(isPresented: $showingAIAssistant) {
-            AIAssistantView(terminalOutput: terminal.recentOutputText)
+            AIAssistantView(
+                terminalOutput: terminal.recentOutputText,
+                selectedText: selectedTextForAI
+            )
         }
         .task(id: connectionAttempt) {
             let attemptID = connectionAttempt
@@ -1416,9 +1434,14 @@ final class TerminalModel: ObservableObject {
     @Published var authPromptInfo: IOSAuthPromptInfo?
     private var authPromptWaiter: IOSAuthPromptWaiter?
     private var recentOutput = Data()
+    weak var terminalView: SwiftTerm.TerminalView?
 
     var recentOutputText: String {
         String(decoding: recentOutput, as: UTF8.self)
+    }
+
+    var selectedTerminalText: String? {
+        terminalView?.getSelection()
     }
 
     func recordOutput(_ data: Data) {
@@ -1547,6 +1570,7 @@ struct IOSSwiftTerm: UIViewRepresentable {
         )
         view.terminalDelegate = context.coordinator
         applyAppearance(to: view)
+        session.terminalView = view
         session.output = { [weak view] data in view?.feed(byteArray: Array(data)[...]) }
         return view
     }
@@ -1591,11 +1615,14 @@ struct IOSSwiftTerm: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(session: session, onResize: onResize) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(session: session, onResize: onResize)
+    }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
         let session: TerminalModel
         let onResize: (Int, Int) -> Void
+
         init(session: TerminalModel, onResize: @escaping (Int, Int) -> Void) {
             self.session = session
             self.onResize = onResize

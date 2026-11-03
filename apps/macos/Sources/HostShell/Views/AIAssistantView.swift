@@ -1,4 +1,12 @@
 import SwiftUI
+import AppKit
+
+private struct AIResponsePart: Identifiable {
+    let id = UUID()
+    let text: String?
+    let command: String?
+    let language: String?
+}
 
 struct AIAssistantView: View {
     @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
@@ -6,6 +14,7 @@ struct AIAssistantView: View {
     @AppStorage(AIProviderSettings.modelKey) private var model = ""
 
     let terminalOutput: String
+    let selectedText: String?
 
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [AIChatMessage] = []
@@ -42,16 +51,16 @@ struct AIAssistantView: View {
                                     Text(message.role == "assistant" ? "AI 助手" : "你")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.secondary)
-                                    Text(message.content)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .textSelection(.enabled)
-                                        .padding(10)
-                                        .background(
-                                            message.role == "assistant"
-                                                ? Color.secondary.opacity(0.12)
-                                                : Color.accentColor.opacity(0.12)
-                                        )
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    if message.role == "assistant" {
+                                        assistantResponse(message.content)
+                                    } else {
+                                        Text(message.content)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .textSelection(.enabled)
+                                            .padding(10)
+                                            .background(Color.accentColor.opacity(0.12))
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
                                 }
                             }
                         }
@@ -104,6 +113,12 @@ struct AIAssistantView: View {
                 }
                 .padding()
             }
+            .onAppear {
+                guard let selectedText, !selectedText.isEmpty else { return }
+                terminalContext = AIProviderSettings.redactSensitiveText(selectedText)
+                includeTerminalOutput = true
+                question = "请分析我选中的终端内容。"
+            }
             .navigationTitle("AI 助手")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -150,6 +165,74 @@ struct AIAssistantView: View {
         问题：
         \(trimmedQuestion)
         """
+    }
+
+    @ViewBuilder
+    private func assistantResponse(_ content: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(responseParts(content)) { part in
+                if let command = part.command {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(part.language.map { $0.isEmpty ? "命令" : $0.uppercased() } ?? "命令")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(command, forType: .string)
+                            } label: {
+                                Label("复制命令", systemImage: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        Text(command)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(10)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else if let text = part.text, !text.isEmpty {
+                    Text((try? AttributedString(markdown: text)) ?? AttributedString(text))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private func responseParts(_ source: String) -> [AIResponsePart] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?s)\x60{3}([A-Za-z0-9_+.-]*)[^\r\n]*\r?\n(.*?)\x60{3}"#) else {
+            return [AIResponsePart(text: source, command: nil, language: nil)]
+        }
+        let fullRange = NSRange(source.startIndex..., in: source)
+        let matches = regex.matches(in: source, range: fullRange)
+        var parts: [AIResponsePart] = []
+        var cursor = 0
+        for match in matches {
+            if match.range.location > cursor,
+               let range = Range(NSRange(location: cursor, length: match.range.location - cursor), in: source) {
+                parts.append(AIResponsePart(text: String(source[range]), command: nil, language: nil))
+            }
+            guard let codeRange = Range(match.range(at: 2), in: source) else { continue }
+            let languageRange = Range(match.range(at: 1), in: source)
+            parts.append(AIResponsePart(
+                text: nil,
+                command: String(source[codeRange]).trimmingCharacters(in: .newlines),
+                language: languageRange.map { String(source[$0]) }
+            ))
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < source.utf16.count,
+           let range = Range(NSRange(location: cursor, length: source.utf16.count - cursor), in: source) {
+            parts.append(AIResponsePart(text: String(source[range]), command: nil, language: nil))
+        }
+        return parts.isEmpty ? [AIResponsePart(text: source, command: nil, language: nil)] : parts
     }
 
     private func sendPreview() {
