@@ -47,7 +47,15 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     private var engine = c_engine_init()
 
-    init() { reload() }
+    var isAvailable: Bool { engine != nil }
+
+    init() {
+        if engine == nil {
+            error = "无法初始化连接核心，请检查本地配置和信任记录是否损坏或无法读取。"
+        } else {
+            reload()
+        }
+    }
     deinit { c_engine_free(engine) }
 
     func reload() {
@@ -96,7 +104,11 @@ final class AppModel: ObservableObject {
     }
 
     func delete(_ host: Host) {
-        _ = host.id.withCString { c_delete_host(engine, $0) }
+        let result = host.id.withCString { c_delete_host(engine, $0) }
+        guard result == 0 else {
+            error = result == 1 ? "主机不存在，请刷新后重试。" : "删除主机失败（错误码 \(result)）。"
+            return
+        }
         reload()
     }
 
@@ -229,30 +241,37 @@ struct HostShellIOSApp: App {
 struct HostListScreen: View {
     @EnvironmentObject private var model: AppModel
     @State private var activeSheet: HostListSheet?
+    @State private var searchText = ""
+    @State private var hostPendingDeletion: Host?
+
+    private var filteredHosts: [Host] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.hosts }
+        return model.hosts.filter { host in
+            ([host.name, host.hostname, host.username] + host.tags)
+                .contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("资产管理") {
-                    Button { activeSheet = .keys } label: {
-                        HStack {
-                            Label("证书管理", systemImage: "key.fill")
-                            Spacer()
-                            Text("\(model.keys.count)").foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        }
+                Section("主机 · \(filteredHosts.count)") {
+                    if !model.isAvailable {
+                        Text("连接核心不可用，请检查本地配置和信任记录。")
+                            .foregroundStyle(.secondary)
+                    } else if model.hosts.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("暂无主机").font(.headline)
+                            Text("添加主机或导入 SSH 配置以开始连接。")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                            Button("添加主机") { activeSheet = .newHost }
+                            Button("导入 SSH 配置") { activeSheet = .importConfig }
+                        }.padding(.vertical, 8)
+                    } else if filteredHosts.isEmpty {
+                        Text("没有匹配的主机").foregroundStyle(.secondary)
                     }
-                }
-                if !model.jumps.isEmpty {
-                    Section("跳板机资产 · \(model.jumps.count)") {
-                        ForEach(model.jumps) { jump in
-                            Label("\(jump.name)  ·  \(jump.hostname):\(jump.port)", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                                .font(.subheadline)
-                        }
-                    }
-                }
-                Section("主机 · \(model.hosts.count)") {
-                    ForEach(model.hosts) { host in
+                    ForEach(filteredHosts) { host in
                         HStack {
                             NavigationLink {
                                 HostSessionScreen(host: host)
@@ -273,25 +292,39 @@ struct HostListScreen: View {
                                 Image(systemName: "pencil.circle").font(.title3)
                             }.buttonStyle(.borderless).accessibilityLabel("编辑 \(host.name)")
                         }
-                        .swipeActions {
-                            Button(role: .destructive) { model.delete(host) } label: { Label("删除", systemImage: "trash") }
+                        .swipeActions(allowsFullSwipe: false) {
+                            Button(role: .destructive) { hostPendingDeletion = host } label: { Label("删除", systemImage: "trash") }
                             Button { activeSheet = .editHost(host) } label: { Label("编辑", systemImage: "pencil") }.tint(.blue)
                         }
                     }
                 }
             }
             .navigationTitle("HostShell")
+            .searchable(text: $searchText, prompt: "搜索名称、地址、用户或标签")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { activeSheet = .jumps } label: { Image(systemName: "point.topleft.down.curvedto.point.bottomright.up") }
-                        .accessibilityLabel("跳板机资产")
-                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { activeSheet = .settings } label: { Image(systemName: "textformat") }.accessibilityLabel("终端设置")
-                    Button { activeSheet = .keys } label: { Image(systemName: "key.fill") }.accessibilityLabel("证书管理")
-                    Button { activeSheet = .importConfig } label: { Image(systemName: "square.and.arrow.down") }.accessibilityLabel("导入 SSH 配置")
+                    Menu {
+                        Button { activeSheet = .jumps } label: { Label("跳板机资产", systemImage: "point.topleft.down.curvedto.point.bottomright.up") }
+                        Button { activeSheet = .keys } label: { Label("证书管理", systemImage: "key.fill") }
+                        Button { activeSheet = .importConfig } label: { Label("导入 SSH 配置", systemImage: "square.and.arrow.down") }
+                        Button { activeSheet = .settings } label: { Label("终端设置", systemImage: "textformat") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }.accessibilityLabel("管理与设置")
                     Button { activeSheet = .newHost } label: { Image(systemName: "plus") }.accessibilityLabel("添加主机")
                 }
+            }
+            .confirmationDialog("删除主机？", isPresented: Binding(
+                get: { hostPendingDeletion != nil },
+                set: { if !$0 { hostPendingDeletion = nil } }
+            ), titleVisibility: .visible, presenting: hostPendingDeletion) { host in
+                Button("删除 \(host.name)", role: .destructive) {
+                    model.delete(host)
+                    hostPendingDeletion = nil
+                }
+                Button("取消", role: .cancel) { hostPendingDeletion = nil }
+            } message: { host in
+                Text("确定删除主机“\(host.name)”？此操作无法撤销。")
             }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {

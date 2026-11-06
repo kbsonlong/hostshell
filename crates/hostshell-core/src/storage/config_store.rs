@@ -24,22 +24,7 @@ impl ConfigStore {
         Ok(())
     }
     pub fn new() -> Result<Self> {
-        let base_dir = Self::default_data_dir()?;
-        fs::create_dir_all(&base_dir).map_err(HostShellError::Io)?;
-
-        let store = Self {
-            base_dir,
-            known_hosts: Arc::new(Mutex::new(KnownHostsStore::new())),
-        };
-
-        // Try load existing known hosts
-        if let Ok(kh) = store.load_known_hosts() {
-            if let Ok(mut guard) = store.known_hosts.lock() {
-                *guard = kh;
-            }
-        }
-
-        Ok(store)
+        Self::with_dir(Self::default_data_dir()?)
     }
 
     pub fn with_dir(dir: PathBuf) -> Result<Self> {
@@ -48,11 +33,9 @@ impl ConfigStore {
             base_dir: dir,
             known_hosts: Arc::new(Mutex::new(KnownHostsStore::new())),
         };
-        if let Ok(kh) = store.load_known_hosts() {
-            if let Ok(mut guard) = store.known_hosts.lock() {
-                *guard = kh;
-            }
-        }
+        let known_hosts = store.load_known_hosts()?;
+        *store.known_hosts.lock()
+            .map_err(|e| HostShellError::Config(format!("Lock poisoned: {}", e)))? = known_hosts;
         Ok(store)
     }
 
@@ -83,10 +66,11 @@ impl ConfigStore {
     // --- Hosts CRUD ---
     pub fn load_hosts(&self) -> Result<Vec<Host>> {
         let file_path = self.base_dir.join("hosts.json");
-        if !file_path.exists() {
-            return Ok(Vec::new());
-        }
-        let data = fs::read_to_string(&file_path).map_err(HostShellError::Io)?;
+        let data = match fs::read_to_string(&file_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(HostShellError::Io(error)),
+        };
         let hosts: Vec<Host> = serde_json::from_str(&data)?;
         Ok(hosts)
     }
@@ -99,7 +83,7 @@ impl ConfigStore {
     }
 
     pub fn save_host(&self, host: Host) -> Result<()> {
-        let mut hosts = self.load_hosts().unwrap_or_default();
+        let mut hosts = self.load_hosts()?;
         // Replace by id, and also by name (re-import / rename flows would
         // otherwise append duplicate entries).
         hosts.retain(|h| h.id != host.id && h.name != host.name);
@@ -108,7 +92,7 @@ impl ConfigStore {
     }
 
     pub fn delete_host(&self, id: &str) -> Result<bool> {
-        let mut hosts = self.load_hosts().unwrap_or_default();
+        let mut hosts = self.load_hosts()?;
         let prev = hosts.len();
         hosts.retain(|h| h.id != id);
         if hosts.len() < prev {
@@ -122,10 +106,11 @@ impl ConfigStore {
     // --- JumpHosts CRUD ---
     pub fn load_jump_hosts(&self) -> Result<Vec<JumpHost>> {
         let file_path = self.base_dir.join("jumphosts.json");
-        if !file_path.exists() {
-            return Ok(Vec::new());
-        }
-        let data = fs::read_to_string(&file_path).map_err(HostShellError::Io)?;
+        let data = match fs::read_to_string(&file_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(HostShellError::Io(error)),
+        };
         let jump_hosts: Vec<JumpHost> = serde_json::from_str(&data)?;
         Ok(jump_hosts)
     }
@@ -138,14 +123,14 @@ impl ConfigStore {
     }
 
     pub fn save_jump_host(&self, jh: JumpHost) -> Result<()> {
-        let mut list = self.load_jump_hosts().unwrap_or_default();
+        let mut list = self.load_jump_hosts()?;
         list.retain(|j| j.id != jh.id && j.name != jh.name);
         list.push(jh);
         self.save_jump_hosts(&list)
     }
 
     pub fn delete_jump_host(&self, id: &str) -> Result<bool> {
-        let mut list = self.load_jump_hosts().unwrap_or_default();
+        let mut list = self.load_jump_hosts()?;
         let prev = list.len();
         list.retain(|j| j.id != id);
         if list.len() < prev {
@@ -159,10 +144,11 @@ impl ConfigStore {
     // --- Known Hosts Persistence ---
     pub fn load_known_hosts(&self) -> Result<KnownHostsStore> {
         let file_path = self.base_dir.join("known_hosts.json");
-        if !file_path.exists() {
-            return Ok(KnownHostsStore::new());
-        }
-        let data = fs::read_to_string(&file_path).map_err(HostShellError::Io)?;
+        let data = match fs::read_to_string(&file_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(KnownHostsStore::new()),
+            Err(error) => return Err(HostShellError::Io(error)),
+        };
         let store: KnownHostsStore = serde_json::from_str(&data)?;
         Ok(store)
     }

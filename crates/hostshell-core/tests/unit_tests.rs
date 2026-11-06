@@ -255,6 +255,74 @@ fn test_config_store_crud() {
     assert!(store.delete_host("host-1-reimport").unwrap());
     assert_eq!(store.load_hosts().unwrap().len(), 0);
 
+    assert!(store.delete_jump_host("jump-1").unwrap());
+    assert!(store.load_jump_hosts().unwrap().is_empty());
+
     // Clean up
     let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+
+#[test]
+fn test_config_store_corrupt_host_files_are_preserved() {
+    let dir = std::env::temp_dir().join(format!("hostshell_corrupt_{}", uuid::Uuid::new_v4()));
+    let store = ConfigStore::with_dir(dir.clone()).unwrap();
+    assert!(store.load_hosts().unwrap().is_empty());
+    assert!(store.load_jump_hosts().unwrap().is_empty());
+    assert!(store.known_hosts_ref().lock().unwrap().entries.is_empty());
+    let host = parse_ssh_config("Host example\n HostName example.test\n").hosts.remove(0);
+    let jump = JumpHost { id: "jump".into(), name: "jump".into(), hostname: "jump.test".into(), port: 22, username: "user".into(), auth: AuthMethod::Agent };
+    let corrupt = b"{ invalid json\n";
+    let hosts_path = dir.join("hosts.json");
+    std::fs::write(&hosts_path, corrupt).unwrap();
+    assert!(store.save_host(host).is_err());
+    assert_eq!(std::fs::read(&hosts_path).unwrap(), corrupt);
+    assert!(store.delete_host("missing").is_err());
+    assert_eq!(std::fs::read(&hosts_path).unwrap(), corrupt);
+    let jump_path = dir.join("jumphosts.json");
+    std::fs::write(&jump_path, corrupt).unwrap();
+    assert!(store.save_jump_host(jump).is_err());
+    assert_eq!(std::fs::read(&jump_path).unwrap(), corrupt);
+    assert!(store.delete_jump_host("missing").is_err());
+    assert_eq!(std::fs::read(&jump_path).unwrap(), corrupt);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn test_config_store_rejects_invalid_known_hosts() {
+    let dir = std::env::temp_dir().join(format!("hostshell_known_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("known_hosts.json");
+    let corrupt = b"{ invalid json\n";
+    std::fs::write(&path, corrupt).unwrap();
+    assert!(ConfigStore::with_dir(dir.clone()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(ConfigStore::with_dir(dir.clone()).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn test_config_store_new_rejects_invalid_known_hosts() {
+    const CHILD: &str = "HOSTSHELL_TEST_NEW_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        assert!(ConfigStore::new().is_err());
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("hostshell_home_{}", uuid::Uuid::new_v4()));
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let dir = home.join("Library/Application Support/HostShell");
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let dir = home.join(".config/hostshell");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("known_hosts.json");
+    let corrupt = b"{ invalid json\n";
+    std::fs::write(&path, corrupt).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "test_config_store_new_rejects_invalid_known_hosts"])
+        .env("HOME", &home).env(CHILD, "1").status().unwrap();
+    assert!(status.success());
+    assert_eq!(std::fs::read(path).unwrap(), corrupt);
+    std::fs::remove_dir_all(home).unwrap();
 }
