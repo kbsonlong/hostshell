@@ -1067,13 +1067,13 @@ struct HostSessionScreen: View {
             }
             .background(themeBackground)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 18) {
+                HStack(spacing: 6) {
                     ForEach(selectedShortcuts) { shortcut in
                         terminalKeyButton(shortcut.title, bytes: shortcut.bytes)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
             .background(.bar)
         }
@@ -1212,9 +1212,17 @@ struct HostSessionScreen: View {
     }
 
     private func terminalKeyButton(_ title: String, bytes: [UInt8]) -> some View {
-        Button(title) { terminal.session?.write(bytes) }
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(.primary)
+        Button {
+            terminal.session?.write(bytes)
+        } label: {
+            Text(title)
+                .font(.system(.caption, design: .monospaced))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("终端快捷键 \(title)")
     }
 
     private var themeBackground: SwiftUI.Color {
