@@ -28,6 +28,17 @@ public struct MainView: View {
                 SettingsView(appVM: appVM)
             }
         }
+        .safeAreaInset(edge: .top) {
+            if let error = appVM.assetLoadError {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                    Spacer()
+                    Button("重试读取") { appVM.loadData() }
+                }
+                .padding(8)
+                .background(.orange.opacity(0.15))
+            }
+        }
         .frame(minWidth: 780, minHeight: 520)
     }
 }

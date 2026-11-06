@@ -44,7 +44,11 @@ public struct HostListView: View {
 
             Divider()
 
-            if appVM.filteredHosts.isEmpty {
+            if appVM.assetLoadError != nil && appVM.hosts.isEmpty {
+                Text("主机列表不可用")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if appVM.filteredHosts.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "server.rack")
                         .font(.system(size: 48))

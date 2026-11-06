@@ -217,7 +217,13 @@ pub extern "C" fn hostshell_list_hosts(engine: *mut EngineWrapper) -> *mut c_cha
         return std::ptr::null_mut();
     }
     let eng = unsafe { &*engine };
-    let hosts = eng.store.load_hosts().unwrap_or_default();
+    let hosts = match eng.store.load_hosts() {
+        Ok(hosts) => hosts,
+        Err(error) => {
+            tracing::error!("Failed to load hosts: {error}");
+            return std::ptr::null_mut();
+        }
+    };
     let json = serde_json::to_string(&hosts).unwrap_or_else(|_| "[]".to_string());
     CString::new(json).unwrap_or_default().into_raw()
 }
@@ -268,7 +274,13 @@ pub extern "C" fn hostshell_list_jump_hosts(engine: *mut EngineWrapper) -> *mut 
         return std::ptr::null_mut();
     }
     let eng = unsafe { &*engine };
-    let jh = eng.store.load_jump_hosts().unwrap_or_default();
+    let jh = match eng.store.load_jump_hosts() {
+        Ok(jumps) => jumps,
+        Err(error) => {
+            tracing::error!("Failed to load jump hosts: {error}");
+            return std::ptr::null_mut();
+        }
+    };
     let json = serde_json::to_string(&jh).unwrap_or_else(|_| "[]".to_string());
     CString::new(json).unwrap_or_default().into_raw()
 }
@@ -660,5 +672,32 @@ pub extern "C" fn hostshell_session_close(session: *mut SessionWrapper) {
             let sess = Box::from_raw(session);
             let _ = sess.cmd_tx.send(SessionCommand::Close);
         }
+    }
+}
+
+#[cfg(test)]
+mod asset_list_tests {
+    use super::*;
+
+    #[test]
+    fn ffi_reports_corrupt_assets_instead_of_empty_lists() {
+        let dir = std::env::temp_dir().join(format!("hostshell_ffi_{}", uuid::Uuid::new_v4()));
+        let store = ConfigStore::with_dir(dir.clone()).unwrap();
+        let mut engine = EngineWrapper {
+            runtime: Runtime::new().unwrap(),
+            store,
+            #[cfg(target_os = "macos")]
+            _log_guard: None,
+        };
+        let ptr = &mut engine as *mut EngineWrapper;
+        let hosts = hostshell_list_hosts(ptr);
+        assert!(!hosts.is_null());
+        assert_eq!(unsafe { CStr::from_ptr(hosts) }.to_str().unwrap(), "[]");
+        hostshell_free_string(hosts);
+        std::fs::write(dir.join("hosts.json"), b"{ invalid").unwrap();
+        std::fs::write(dir.join("jumphosts.json"), b"{ invalid").unwrap();
+        assert!(hostshell_list_hosts(ptr).is_null());
+        assert!(hostshell_list_jump_hosts(ptr).is_null());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -181,13 +181,13 @@ public final class HostShellBridge: @unchecked Sendable {
         }
     }
 
-    public func listHosts() -> [Host] {
-        guard let ptr = enginePtr, let cStr = c_hostshell_list_hosts(ptr) else { return [] }
+    public func listHosts() -> [Host]? {
+        guard let ptr = enginePtr, let cStr = c_hostshell_list_hosts(ptr) else { return nil }
         defer { c_hostshell_free_string(cStr) }
         let jsonStr = String(cString: cStr)
-        guard let data = jsonStr.data(using: .utf8) else { return [] }
+        guard let data = jsonStr.data(using: .utf8) else { return nil }
         let decoder = JSONDecoder()
-        return (try? decoder.decode([Host].self, from: data)) ?? []
+        return try? decoder.decode([Host].self, from: data)
     }
 
     public func saveHost(_ host: Host) -> Bool {
@@ -203,13 +203,13 @@ public final class HostShellBridge: @unchecked Sendable {
         return c_hostshell_delete_host(ptr, id) == 0
     }
 
-    public func listJumpHosts() -> [JumpHost] {
-        guard let ptr = enginePtr, let cStr = c_hostshell_list_jump_hosts(ptr) else { return [] }
+    public func listJumpHosts() -> [JumpHost]? {
+        guard let ptr = enginePtr, let cStr = c_hostshell_list_jump_hosts(ptr) else { return nil }
         defer { c_hostshell_free_string(cStr) }
         let jsonStr = String(cString: cStr)
-        guard let data = jsonStr.data(using: .utf8) else { return [] }
+        guard let data = jsonStr.data(using: .utf8) else { return nil }
         let decoder = JSONDecoder()
-        return (try? decoder.decode([JumpHost].self, from: data)) ?? []
+        return try? decoder.decode([JumpHost].self, from: data)
     }
 
     public func saveJumpHost(_ jh: JumpHost) -> Bool {

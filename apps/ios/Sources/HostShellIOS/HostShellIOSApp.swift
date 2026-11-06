@@ -45,6 +45,7 @@ final class AppModel: ObservableObject {
     @Published var jumps: [JumpHost] = []
     @Published var keys: [SSHKeyMetadata] = []
     @Published var error: String?
+    @Published var assetLoadError: String?
     private var engine = c_engine_init()
 
     var isAvailable: Bool { engine != nil }
@@ -59,9 +60,13 @@ final class AppModel: ObservableObject {
     deinit { c_engine_free(engine) }
 
     func reload() {
-        hosts = decodeArray(c_list_hosts(engine))
-        jumps = decodeArray(c_list_jumps(engine))
-        keys = decodeArray(c_list_keys(engine))
+        let loadedHosts: [Host]? = decodeArray(c_list_hosts(engine))
+        let loadedJumps: [JumpHost]? = decodeArray(c_list_jumps(engine))
+        if let loadedHosts { hosts = loadedHosts }
+        if let loadedJumps { jumps = loadedJumps }
+        assetLoadError = loadedHosts == nil || loadedJumps == nil
+            ? "无法读取主机或跳板机配置，请检查本地文件和访问权限。已保留上次加载的列表。" : nil
+        keys = decodeArray(c_list_keys(engine)) ?? []
     }
 
     func addKey(name: String, key: String, passphrase: String) -> String? {
@@ -143,10 +148,10 @@ final class AppModel: ObservableObject {
         return Session(pointer: pointer, context: pointer == nil ? nil : opaque)
     }
 
-    private func decodeArray<T: Decodable>(_ ptr: UnsafeMutablePointer<CChar>?) -> [T] {
-        guard let ptr else { return [] }
+    private func decodeArray<T: Decodable>(_ ptr: UnsafeMutablePointer<CChar>?) -> [T]? {
+        guard let ptr else { return nil }
         defer { c_free_string(ptr) }
-        return (try? JSONDecoder().decode([T].self, from: Data(String(cString: ptr).utf8))) ?? []
+        return try? JSONDecoder().decode([T].self, from: Data(String(cString: ptr).utf8))
     }
 }
 
@@ -256,10 +261,19 @@ struct HostListScreen: View {
     var body: some View {
         NavigationStack {
             List {
+                if let loadError = model.assetLoadError {
+                    Section {
+                        Label(loadError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Button("重试读取") { model.reload() }
+                    }
+                }
                 Section("主机 · \(filteredHosts.count)") {
                     if !model.isAvailable {
                         Text("连接核心不可用，请检查本地配置和信任记录。")
                             .foregroundStyle(.secondary)
+                    } else if model.assetLoadError != nil && model.hosts.isEmpty {
+                        Text("主机列表不可用").foregroundStyle(.secondary)
                     } else if model.hosts.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("暂无主机").font(.headline)

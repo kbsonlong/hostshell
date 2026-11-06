@@ -28,6 +28,7 @@ public final class AppViewModel: ObservableObject {
     @Published public var jumpHosts: [JumpHost] = []
     @Published public var keys: [SSHKeyMetadata] = []
     @Published public var searchQuery: String = ""
+    @Published public var assetLoadError: String?
 
     // Sheet states
     @Published public var isShowingHostEditor: Bool = false
@@ -47,8 +48,12 @@ public final class AppViewModel: ObservableObject {
     }
 
     public func loadData() {
-        self.hosts = bridge.listHosts()
-        self.jumpHosts = bridge.listJumpHosts()
+        let loadedHosts = bridge.listHosts()
+        let loadedJumps = bridge.listJumpHosts()
+        if let loadedHosts { self.hosts = loadedHosts }
+        if let loadedJumps { self.jumpHosts = loadedJumps }
+        assetLoadError = loadedHosts == nil || loadedJumps == nil
+            ? "无法读取主机或跳板机配置，请检查连接核心、本地文件和访问权限。已保留上次加载的列表。" : nil
         self.keys = bridge.listKeys()
     }
 
