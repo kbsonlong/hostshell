@@ -52,6 +52,8 @@ hostshell/
 
 Release 页面还提供各架构的构建信息与 SHA256 校验文件。版本固定下载地址格式为 `https://github.com/kbsonlong/hostshell/releases/download/<版本标签>/<资源文件名>`，例如 `HostShell-macos-arm64.dmg` 或 `hostshell-cli-macos-amd64.tar.gz`。
 
+需要在发布前远端验证 Release 构建时，可在 GitHub Actions 的 **Manual Release Build** 页面选择分支或标签并运行。流程先执行完整回归，再并行构建两种架构的 macOS App、CLI 和 iOS Release archive；产物、提交信息及 SHA256 校验文件保留在该次运行的 Artifacts 中 14 天。此流程不会创建 GitHub Release。macOS 产物未经开发者签名和公证，iOS archive 未签名，不能直接安装或上传 App Store；正式分发仍需配置 Apple 签名和导出流程。标签发布仍使用现有 HostShell CI 流程。
+
 ## 快速开始
 
 ### CLI

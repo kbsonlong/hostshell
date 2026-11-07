@@ -75,7 +75,7 @@ struct AIAssistantView: View {
                         .lineLimit(2...5)
                         .textFieldStyle(.roundedBorder)
 
-                    Toggle("附加最近终端输出", isOn: $includeTerminalOutput)
+                    Toggle(selectedText?.isEmpty == false ? "附加选中内容" : "附加最近终端输出（最多 4 KiB）", isOn: $includeTerminalOutput)
                         .font(.subheadline)
                         .onChange(of: includeTerminalOutput) { included in
                             if included && terminalContext.isEmpty {

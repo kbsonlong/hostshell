@@ -1,0 +1,119 @@
+name: Manual Release Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    name: Release regression
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Select iPhone simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = [device for group in json.load(sys.stdin)["devices"].values() for device in group
+                     if device.get("isAvailable") and device.get("name", "").startswith("iPhone")]
+          if not devices:
+              raise SystemExit("No available iPhone simulator")
+          print(devices[0]["udid"])
+          ')"
+          echo "HOSTSHELL_IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+      - name: Run regression
+        run: ./scripts/check_regression.sh
+
+  macos:
+    name: macOS and CLI (${{ matrix.arch }})
+    needs: regression
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            expected_arch: arm64
+          - arch: amd64
+            runner: macos-15-intel
+            expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify runner and build
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+          HOSTSHELL_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          ./scripts/build_cli.sh
+          ./scripts/build_macos.sh
+      - name: Package artifacts
+        shell: bash
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent target/HostShell.app "dist/HostShell-macos-${RELEASE_ARCH}.zip"
+          tar -C target/release -czf "dist/hostshell-cli-macos-${RELEASE_ARCH}.tar.gz" hostshell-cli
+          printf 'commit=%s\nrun=%s\narchitecture=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_NUMBER" "$RELEASE_ARCH" > dist/BUILD-INFO.txt
+          (cd dist && shasum -a 256 ./* > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hostshell-macos-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: iOS unsigned Release archive
+    needs: regression
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build iOS core
+        run: ./scripts/build_ios.sh
+      - name: Archive unsigned iOS app
+        run: |
+          xcodebuild -project apps/ios/HostShellIOS.xcodeproj \
+            -scheme HostShellIOS -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/HostShellIOS.xcarchive" \
+            -skipPackagePluginValidation archive CODE_SIGNING_ALLOWED=NO
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/HostShellIOS.xcarchive" dist/HostShellIOS-unsigned.xcarchive.zip
+          printf 'commit=%s\nrun=%s\nsigning=unsigned\n' "$GITHUB_SHA" "$GITHUB_RUN_NUMBER" > dist/BUILD-INFO.txt
+          (cd dist && shasum -a 256 ./* > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hostshell-ios-unsigned-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

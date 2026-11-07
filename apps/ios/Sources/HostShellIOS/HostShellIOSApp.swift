@@ -248,6 +248,8 @@ struct HostListScreen: View {
     @State private var activeSheet: HostListSheet?
     @State private var searchText = ""
     @State private var hostPendingDeletion: Host?
+    @State private var sessionHost: Host?
+    @State private var showingSessions = false
 
     private var filteredHosts: [Host] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -268,42 +270,69 @@ struct HostListScreen: View {
                         Button("重试读取") { model.reload() }
                     }
                 }
-                Section("主机 · \(filteredHosts.count)") {
+                Section {
                     if !model.isAvailable {
                         Text("连接核心不可用，请检查本地配置和信任记录。")
                             .foregroundStyle(.secondary)
                     } else if model.assetLoadError != nil && model.hosts.isEmpty {
                         Text("主机列表不可用").foregroundStyle(.secondary)
                     } else if model.hosts.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("暂无主机").font(.headline)
-                            Text("添加主机或导入 SSH 配置以开始连接。")
+                        VStack(spacing: 14) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 30, weight: .medium))
+                                .foregroundStyle(.blue)
+                                .frame(width: 64, height: 64)
+                                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
+                            Text("添加你的第一台主机").font(.headline)
+                            Text("连接服务器，或导入已有的 SSH 配置。")
                                 .font(.subheadline).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
                             Button("添加主机") { activeSheet = .newHost }
+                                .buttonStyle(.borderedProminent)
                             Button("导入 SSH 配置") { activeSheet = .importConfig }
-                        }.padding(.vertical, 8)
+                                .font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 28)
                     } else if filteredHosts.isEmpty {
-                        Text("没有匹配的主机").foregroundStyle(.secondary)
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.title2).foregroundStyle(.secondary)
+                            Text("没有匹配的主机").font(.headline)
+                            Text("试试其他名称、地址、用户或标签。")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
                     }
                     ForEach(filteredHosts) { host in
-                        HStack {
-                            NavigationLink {
-                                HostSessionScreen(host: host)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    HStack {
-                                        Text(host.name).font(.headline)
-                                        Spacer()
-                                        Text(host.proxy_mode.badgeName).font(.caption2).padding(4).background(.blue.opacity(0.12)).clipShape(Capsule())
-                                        if let forwards = host.port_forwards, !forwards.isEmpty {
-                                            Text("\(forwards.count) 隧道").font(.caption2).padding(4).background(.cyan.opacity(0.12)).clipShape(Capsule())
+                        HStack(spacing: 12) {
+                            Button { sessionHost = host; showingSessions = true } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "terminal.fill")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(.blue)
+                                        .frame(width: 44, height: 44)
+                                        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(host.name).font(.headline).lineLimit(1)
+                                        Text("\(host.username)@\(host.hostname):\(host.port)")
+                                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                                        HStack(spacing: 6) {
+                                            Text(host.proxy_mode.badgeName)
+                                            if let forwards = host.port_forwards, !forwards.isEmpty {
+                                                Text("· \(forwards.count) 隧道")
+                                            }
                                         }
+                                        .font(.caption).foregroundStyle(.secondary)
                                     }
-                                    Text("\(host.username)@\(host.hostname):\(host.port)").font(.caption).foregroundStyle(.secondary)
                                 }
+                                .padding(.vertical, 5)
                             }
+                            .buttonStyle(.plain)
                             Button { activeSheet = .editHost(host) } label: {
-                                Image(systemName: "pencil.circle").font(.title3)
+                                Image(systemName: "ellipsis").foregroundStyle(.secondary)
+                                    .frame(width: 36, height: 44)
                             }.buttonStyle(.borderless).accessibilityLabel("编辑 \(host.name)")
                         }
                         .swipeActions(allowsFullSwipe: false) {
@@ -311,15 +340,25 @@ struct HostListScreen: View {
                             Button { activeSheet = .editHost(host) } label: { Label("编辑", systemImage: "pencil") }.tint(.blue)
                         }
                     }
+                } header: {
+                    HStack {
+                        Text("所有主机")
+                        Spacer()
+                        Text("\(filteredHosts.count)")
+                    }
                 }
             }
-            .navigationTitle("HostShell")
+            .navigationTitle("主机")
+            .navigationDestination(isPresented: $showingSessions) {
+                if let sessionHost { SessionWorkspace(initialHost: sessionHost) }
+            }
             .searchable(text: $searchText, prompt: "搜索名称、地址、用户或标签")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
                         Button { activeSheet = .jumps } label: { Label("跳板机资产", systemImage: "point.topleft.down.curvedto.point.bottomright.up") }
                         Button { activeSheet = .keys } label: { Label("证书管理", systemImage: "key.fill") }
+                        Button { activeSheet = .forwards } label: { Label("端口转发", systemImage: "arrow.left.arrow.right") }
                         Button { activeSheet = .importConfig } label: { Label("导入 SSH 配置", systemImage: "square.and.arrow.down") }
                         Button { activeSheet = .settings } label: { Label("终端设置", systemImage: "textformat") }
                     } label: {
@@ -347,6 +386,7 @@ struct HostListScreen: View {
                 case .importConfig: ImportSheet()
                 case .jumps: JumpHostListSheet()
                 case .keys: KeyManagementSheet()
+                case .forwards: PortForwardManagementSheet()
                 case .settings: IOSTerminalSettingsSheet()
                 }
             }
@@ -358,7 +398,7 @@ struct HostListScreen: View {
 }
 
 private enum HostListSheet: Identifiable {
-    case newHost, editHost(Host), importConfig, jumps, keys, settings
+    case newHost, editHost(Host), importConfig, jumps, keys, forwards, settings
     var id: String {
         switch self {
         case .newHost: return "new-host"
@@ -366,6 +406,7 @@ private enum HostListSheet: Identifiable {
         case .importConfig: return "import-config"
         case .jumps: return "jumps"
         case .keys: return "keys"
+        case .forwards: return "forwards"
         case .settings: return "settings"
         }
     }
@@ -689,24 +730,33 @@ struct KeyManagementSheet: View {
             Group {
                 if model.keys.isEmpty {
                     VStack(spacing: 10) {
-                        Image(systemName: "key").font(.system(size: 42)).foregroundStyle(.tertiary)
-                        Text("暂无证书").font(.headline)
+                        Image(systemName: "key.fill").font(.system(size: 28)).foregroundStyle(.blue)
+                            .frame(width: 64, height: 64)
+                            .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
+                        Text("添加 SSH 私钥").font(.headline)
                         Text("导入 SSH 私钥后，可在主机认证和 Agent 转发中使用。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         Button("导入私钥") { showingImport = true }
                             .buttonStyle(.borderedProminent)
                     }
+                    .padding(.horizontal, 32)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
                         Section("已保存证书 · \(model.keys.count)") {
                             ForEach(model.keys) { item in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.name).font(.headline)
-                                    Text("\(item.algorithm) · \(item.fingerprint)")
-                                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                    Text(usageText(item)).font(.caption2).foregroundStyle(.tertiary)
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: "key.fill").foregroundStyle(.blue)
+                                        .frame(width: 44, height: 44)
+                                        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(item.name).font(.headline)
+                                        Text("\(item.algorithm) · \(item.fingerprint)")
+                                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                        Text(usageText(item)).font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
+                                .padding(.vertical, 5)
                                 .swipeActions {
                                     Button(role: .destructive) { pendingDelete = item } label: { Label("删除", systemImage: "trash") }
                                 }
@@ -720,7 +770,7 @@ struct KeyManagementSheet: View {
                     }
                 }
             }
-            .navigationTitle("证书管理")
+            .navigationTitle("Keychain")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -751,6 +801,154 @@ struct KeyManagementSheet: View {
                 Button("好", role: .cancel) { error = nil }
             } message: { Text(error ?? "") }
         }
+    }
+}
+
+private struct PortForwardManagementSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingHost: Host?
+    @State private var showingNewRule = false
+
+    private var configuredHosts: [Host] {
+        model.hosts.filter { !($0.port_forwards ?? []).isEmpty }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if configuredHosts.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "arrow.left.arrow.right")
+                                .font(.system(size: 28)).foregroundStyle(.blue)
+                                .frame(width: 64, height: 64)
+                                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
+                            Text("暂无转发规则").font(.headline)
+                            Text("选择主机，添加本地、远程或 SOCKS5 转发。")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("添加转发规则") { showingNewRule = true }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(model.hosts.isEmpty)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    }
+                    ForEach(configuredHosts) { host in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label(host.name, systemImage: "server.rack").font(.headline)
+                                Spacer()
+                                Button("管理") { editingHost = host }
+                            }
+                            ForEach(Array((host.port_forwards ?? []).enumerated()), id: \.offset) { _, rule in
+                                Text(rule.displayName)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                    }
+                } header: {
+                    Text("转发规则")
+                } footer: {
+                    Text("转发规则随所属主机的 SSH 会话启动和停止。")
+                }
+                Section("选择主机") {
+                    if model.hosts.isEmpty {
+                        Text("请先添加主机。").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.hosts) { host in
+                        Button { editingHost = host } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(host.name).foregroundStyle(.primary)
+                                    Text(host.hostname).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("端口转发")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingNewRule = true } label: { Image(systemName: "plus") }
+                        .disabled(model.hosts.isEmpty).accessibilityLabel("添加转发规则")
+                }
+            }
+            .sheet(item: $editingHost) { host in
+                HostEditor(host: host, onSave: model.save)
+            }
+            .sheet(isPresented: $showingNewRule) { PortForwardEditor() }
+        }
+    }
+}
+
+private struct PortForwardEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var hostID = ""
+    @State private var direction = "local"
+    @State private var bind = "127.0.0.1:8080"
+    @State private var target = "127.0.0.1:80"
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("主机") {
+                    Picker("所属主机", selection: $hostID) {
+                        Text("选择主机").tag("")
+                        ForEach(model.hosts) { host in Text(host.name).tag(host.id) }
+                    }
+                }
+                Section("转发规则") {
+                    Picker("类型", selection: $direction) {
+                        Text("本地转发").tag("local")
+                        Text("远程转发").tag("remote")
+                        Text("SOCKS5 动态转发").tag("dynamic")
+                    }
+                    TextField("监听地址或 socket 路径", text: $bind)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    if direction != "dynamic" {
+                        TextField("目标地址或 socket 路径", text: $target)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    Text("TCP 示例：127.0.0.1:8080；Unix socket 示例：/tmp/hostshell.sock。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle("添加转发")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
+            }
+            .onAppear { if model.hosts.count == 1 { hostID = model.hosts[0].id } }
+        }
+    }
+
+    private func save() {
+        guard var host = model.hosts.first(where: { $0.id == hostID }) else {
+            error = "请选择所属主机。"
+            return
+        }
+        guard let rule = PortForwardRule.parse(direction: direction, bind: bind, target: target) else {
+            error = "端点格式无效，请检查地址、路径和端口。"
+            return
+        }
+        var rules = host.port_forwards ?? []
+        guard !rules.contains(rule) else { error = "该主机已存在相同的规则。"; return }
+        rules.append(rule)
+        host.port_forwards = rules
+        if model.save(host) { dismiss() } else { error = model.error; model.error = nil }
     }
 }
 
@@ -986,10 +1184,109 @@ final class IOSAuthPromptWaiter {
     }
 }
 
+private struct SessionTab: Identifiable {
+    let id = UUID()
+    let host: Host
+    let usesExistingForwards: Bool
+
+    init(host: Host, usesExistingForwards: Bool = false) {
+        self.host = host
+        self.usesExistingForwards = usesExistingForwards
+    }
+
+    var connectionHost: Host {
+        var result = host
+        if usesExistingForwards { result.port_forwards = [] }
+        return result
+    }
+}
+
+private struct SessionWorkspace: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var tabs: [SessionTab]
+    @State private var selectedID: UUID
+    @State private var showingHosts = false
+
+    init(initialHost: Host) {
+        let tab = SessionTab(host: initialHost)
+        _tabs = State(initialValue: [tab])
+        _selectedID = State(initialValue: tab.id)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(tabs) { tab in
+                        HStack(spacing: 6) {
+                            Button { selectedID = tab.id } label: {
+                                Text(tab.host.name).lineLimit(1)
+                            }
+                            Button { close(tab) } label: {
+                                Image(systemName: "xmark").font(.caption2.weight(.bold))
+                                    .frame(width: 28, height: 36)
+                            }
+                            .accessibilityLabel("关闭 \(tab.host.name) 标签")
+                        }
+                        .font(.subheadline)
+                        .padding(.leading, 12)
+                        .background(selectedID == tab.id ? Color.accentColor.opacity(0.16) : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    Button { showingHosts = true } label: {
+                        Image(systemName: "plus").frame(width: 44, height: 44)
+                    }.accessibilityLabel("新建会话")
+                }
+                .padding(.horizontal, 8)
+            }
+            .background(.bar)
+            ZStack {
+                ForEach(tabs) { tab in
+                    HostSessionScreen(host: tab.connectionHost, usesExistingForwards: tab.usesExistingForwards)
+                        .opacity(selectedID == tab.id ? 1 : 0)
+                        .allowsHitTesting(selectedID == tab.id)
+                        .accessibilityHidden(selectedID != tab.id)
+                }
+            }
+        }
+        .navigationTitle("会话")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingHosts) {
+            NavigationStack {
+                List(model.hosts) { host in
+                    Button {
+                        let hasForwardOwner = tabs.contains { $0.host.id == host.id && !$0.usesExistingForwards }
+                        let tab = SessionTab(host: host, usesExistingForwards: hasForwardOwner && !(host.port_forwards ?? []).isEmpty)
+                        tabs.append(tab)
+                        selectedID = tab.id
+                        showingHosts = false
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(host.name)
+                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .navigationTitle("新建会话")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { showingHosts = false } } }
+            }
+        }
+    }
+
+    private func close(_ tab: SessionTab) {
+        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        tabs.remove(at: index)
+        if selectedID == tab.id, let next = tabs.last { selectedID = next.id }
+        if tabs.isEmpty { showingHosts = true }
+    }
+}
+
 struct HostSessionScreen: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     let host: Host
+    var usesExistingForwards = false
     @StateObject private var terminal = TerminalModel()
     @StateObject private var networkMonitor = NetworkStatusMonitor()
     @State private var stage = "正在连接…"
@@ -1015,26 +1312,38 @@ struct HostSessionScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Circle().fill(connected ? .green : (connecting ? .orange : .red)).frame(width: 8, height: 8)
+            if usesExistingForwards {
+                Text("端口转发由此主机的另一个标签提供；关闭该标签后转发会停止。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.bar)
+            }
+            HStack(spacing: 12) {
                 Button { showingStageDetails = true } label: {
-                    Text(connectionNotice ?? stage).font(.caption).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 7) {
+                        Circle().fill(connected ? .green : (connecting ? .orange : .red))
+                            .frame(width: 7, height: 7)
+                        Text(connectionNotice ?? stage)
+                            .font(.caption).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("查看和复制连接状态")
-                Spacer()
                 Button { showingTerminalSettings = true } label: {
                     Image(systemName: "slider.horizontal.3")
+                        .frame(width: 44, height: 44)
                 }
-                .font(.caption)
                 .accessibilityLabel("终端设置")
                 if aiEnabled {
                     Button {
-                        selectedTextForAI = nil
+                        selectedTextForAI = terminal.selectedTerminalText
                         showingAIAssistant = true
                     } label: {
                         Image(systemName: "sparkles")
+                            .frame(width: 44, height: 44)
                     }
-                    .font(.caption)
-                    .accessibilityLabel("AI 助手")
+                    .accessibilityLabel("AI 助手，分析选中内容")
                 }
                 if connected || connecting {
                     Button(connecting ? "取消" : "断开") {
@@ -1045,39 +1354,33 @@ struct HostSessionScreen: View {
                         connected = false
                         connecting = false
                         stage = "连接已断开"
-                    }.font(.caption)
+                    }.font(.caption.weight(.semibold))
+                        .frame(minHeight: 44)
                 } else {
-                    Button("重连", action: reconnect).font(.caption)
+                    Button("重连", action: reconnect).font(.caption.weight(.semibold))
+                        .frame(minHeight: 44)
                 }
-            }.padding(8)
+            }
+            .padding(.horizontal, 12)
+            .background(.bar)
             IOSSwiftTerm(
                 session: terminal,
                 preferences: terminalPreferences,
                 onResize: { cols, rows in
                 terminal.session?.resize(cols: UInt32(cols), rows: UInt32(rows))
             })
-            .contextMenu {
-                Button {
-                    guard let text = terminal.selectedTerminalText, !text.isEmpty else { return }
-                    selectedTextForAI = text
-                    showingAIAssistant = true
-                } label: {
-                    Label("发送选中内容给 AI 助手", systemImage: "sparkles")
-                }
-            }
             .background(themeBackground)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     ForEach(selectedShortcuts) { shortcut in
                         terminalKeyButton(shortcut.title, bytes: shortcut.bytes)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
             .background(.bar)
         }
-        .navigationTitle(host.name).navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingStageDetails) {
             NavigationStack {
                 ScrollView {
@@ -1218,6 +1521,7 @@ struct HostSessionScreen: View {
             Text(title)
                 .font(.system(.caption, design: .monospaced))
                 .frame(minWidth: 44, minHeight: 44)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1481,7 +1785,7 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
 
 @MainActor
 final class TerminalModel: ObservableObject {
-    private static let recentOutputLimit = 16 * 1024
+    private static let recentOutputLimit = 4 * 1024
     var session: Session?
     var connectCancellation: IOSConnectCancellation?
     private var connectionCancelled = false
