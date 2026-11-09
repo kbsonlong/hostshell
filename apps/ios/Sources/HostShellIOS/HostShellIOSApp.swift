@@ -56,7 +56,7 @@ final class AppModel: ObservableObject {
     @Published var keys: [SSHKeyMetadata] = []
     @Published var error: String?
     @Published var assetLoadError: String?
-    private var engine = c_engine_init()
+    nonisolated(unsafe) private var engine = c_engine_init()
 
     var isAvailable: Bool { engine != nil }
 
@@ -143,7 +143,7 @@ final class AppModel: ObservableObject {
         return try? JSONDecoder().decode(ImportResponse.self, from: Data(String(cString: ptr).utf8))
     }
 
-    func connect(
+    nonisolated func connect(
         _ host: Host,
         onStage: @escaping (String) -> Void,
         onOutput: @escaping (Data) -> Void,
