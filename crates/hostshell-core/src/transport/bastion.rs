@@ -53,6 +53,40 @@ fn decode_jump_private_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh::client::Handler;
+
+    #[tokio::test]
+    async fn target_and_jump_host_keys_are_checked_independently() {
+        let trusted_key = russh::keys::PrivateKey::random(
+            &mut rand::rng(), russh::keys::ssh_key::Algorithm::Ed25519,
+        ).unwrap();
+        let changed_key = russh::keys::PrivateKey::random(
+            &mut rand::rng(), russh::keys::ssh_key::Algorithm::Ed25519,
+        ).unwrap();
+        let trusted = russh::keys::PublicKeyOrCertificate::from(trusted_key.public_key().clone());
+        let changed = russh::keys::PublicKeyOrCertificate::from(changed_key.public_key().clone());
+        let known = Arc::new(std::sync::Mutex::new(KnownHostsStore::new()));
+        let rejected = Arc::new(std::sync::Mutex::new(None));
+        let mut jump = BastionClientHandler::new("jump.test".into(), 22, Arc::clone(&known), Arc::clone(&rejected), true, None);
+        assert!(jump.check_server_key(&trusted).await.unwrap());
+        assert!(jump.check_server_key(&trusted).await.unwrap());
+        assert!(!jump.check_server_key(&changed).await.unwrap());
+        assert_eq!(known.lock().unwrap().entries.len(), 1);
+
+        let mut target = crate::ssh::handler::TargetClientHandler {
+            hostname: "target.test".into(), port: 22, known_hosts: Arc::clone(&known),
+            host_key_rejection: Arc::new(std::sync::Mutex::new(None)), stage_tx: None,
+            auto_accept_new_keys: false, agent: None, remote_forwards: Default::default(),
+        };
+        assert!(!target.check_server_key(&trusted).await.unwrap());
+        assert_eq!(known.lock().unwrap().entries.len(), 1);
+        target.auto_accept_new_keys = true;
+        assert!(target.check_server_key(&trusted).await.unwrap());
+        assert!(!target.check_server_key(&changed).await.unwrap());
+        let guard = known.lock().unwrap();
+        assert_eq!(guard.entries.len(), 2);
+        assert_eq!(guard.find("jump.test", 22).unwrap().fingerprint, guard.find("target.test", 22).unwrap().fingerprint);
+    }
 
     struct Sha2OnlyServer;
 
