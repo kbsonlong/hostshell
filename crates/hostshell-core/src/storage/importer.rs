@@ -348,9 +348,12 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
         let Some(raw_ref) = hosts[idx].jump_host_ids.first().cloned() else {
             continue;
         };
-        let (override_user, ref_name) = match raw_ref.rsplit_once('@') {
+        let mut resolved_ids = Vec::new();
+        let mut unresolved = false;
+        for hop in raw_ref.split(',') {
+        let (override_user, ref_name) = match hop.rsplit_once('@') {
             Some((user, name)) if !user.is_empty() => (Some(user), name),
-            _ => (None, raw_ref.as_str()),
+            _ => (None, hop),
         };
         let ref_name = ref_name.to_string();
         let target = existing_hosts.iter()
@@ -369,7 +372,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                 let username = override_user.unwrap_or(&configured_user).to_string();
                 let equivalent = existing_jumps.iter().find(|j| j.name.eq_ignore_ascii_case(&ref_name) && j.hostname == hostname && j.port == port && j.username == username && j.auth == auth);
                 if let Some(id) = existing_id.filter(|_| username == configured_user).or_else(|| equivalent.map(|j| j.id.clone())) {
-                    hosts[idx].jump_host_ids = vec![id];
+                    resolved_ids.push(id);
                     continue;
                 }
                 let id = match jump_hosts.iter().find(|j| j.username == username && j.hostname == hostname && j.port == port && j.auth == auth) {
@@ -390,16 +393,19 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                         id
                     }
                 };
-                hosts[idx].jump_host_ids = vec![id];
+                resolved_ids.push(id);
             }
             None => {
                 warnings.push(format!(
                     "Host '{}': ProxyJump '{}' has no matching Host block or saved jump host; left unlinked.",
-                    hosts[idx].name, raw_ref
+                    hosts[idx].name, hop
                 ));
-                hosts[idx].jump_host_ids = Vec::new();
+                unresolved = true;
+                break;
             }
         }
+        }
+        hosts[idx].jump_host_ids = if unresolved { Vec::new() } else { resolved_ids };
     }
 
     ImportResult { hosts, jump_hosts, warnings }

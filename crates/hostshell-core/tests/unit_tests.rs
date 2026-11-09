@@ -136,6 +136,21 @@ fn test_import_proxyjump_missing_target_is_warning_and_not_dangling() {
 }
 
 #[test]
+fn import_proxyjump_chain_keeps_order_and_rejects_partial_resolution() {
+    let config = "Host first\n HostName first.test\n User one\nHost second\n HostName second.test\n User two\nHost target\n ProxyJump first,other@second\n";
+    let result = parse_ssh_config(config);
+    let target = result.hosts.iter().find(|host| host.name == "target").unwrap();
+    let hops: Vec<_> = target.jump_host_ids.iter().map(|id| result.jump_hosts.iter().find(|hop| &hop.id == id).unwrap()).collect();
+    assert_eq!(hops.iter().map(|hop| hop.hostname.as_str()).collect::<Vec<_>>(), vec!["first.test", "second.test"]);
+    assert_eq!(hops[1].username, "other");
+
+    let incomplete = parse_ssh_config("Host first\n HostName first.test\nHost target\n ProxyJump first,missing\n");
+    let target = incomplete.hosts.iter().find(|host| host.name == "target").unwrap();
+    assert!(target.jump_host_ids.is_empty());
+    assert!(incomplete.warnings.iter().any(|warning| warning.contains("missing")));
+}
+
+#[test]
 fn test_import_matches_saved_jump_and_preserves_forward_agent() {
     let jump = JumpHost {
         id: "saved-jump".into(), name: "jump".into(), hostname: "jump.example".into(),
