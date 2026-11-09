@@ -1,12 +1,13 @@
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::collections::HashSet;
 
 use hostshell_core::model::host::{AuthMethod, Host, JumpHost, ProxyMode};
 use hostshell_core::model::stage::ConnectionStage;
 use hostshell_core::ssh::session::SshSession;
 use hostshell_core::storage::config_store::ConfigStore;
-use hostshell_core::storage::importer::parse_ssh_config;
+use hostshell_core::storage::importer::parse_ssh_config_with_existing;
 
 // ── raw terminal helpers ──────────────────────────────────────────────────────
 
@@ -177,16 +178,30 @@ fn cmd_import(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::e
         return Ok(());
     }
     let content = std::fs::read_to_string(&args[2])?;
-    let res = parse_ssh_config(&content);
-    println!("Imported {} host(s), {} jump host(s), {} warning(s):", res.hosts.len(), res.jump_hosts.len(), res.warnings.len());
-    for h in &res.hosts {
-        println!("  + {} (mode: {:?})", h.name, h.proxy_mode);
-        store.save_host(h.clone())?;
+    let hosts = store.load_hosts()?;
+    let jumps = store.load_jump_hosts()?;
+    let res = parse_ssh_config_with_existing(&content, &hosts, &jumps);
+    if res.hosts.is_empty() {
+        for warning in &res.warnings { eprintln!("  ! {warning}"); }
+        return Err("No hosts imported; check the configuration and warnings".into());
     }
-    for j in &res.jump_hosts {
-        println!("  + [jump] {} → {}:{} ({})", j.name, j.hostname, j.port, j.username);
-        store.save_jump_host(j.clone())?;
+    let mut names: HashSet<String> = hosts.iter().map(|host| host.name.clone()).collect();
+    let mut skipped = Vec::new();
+    let imported: Vec<_> = res.hosts.iter().filter(|host| {
+        if names.insert(host.name.clone()) { true } else { skipped.push(host.name.clone()); false }
+    }).collect();
+    let jump_ids: HashSet<_> = imported.iter().flat_map(|host| host.jump_host_ids.iter()).collect();
+    let imported_jumps: Vec<_> = res.jump_hosts.iter().filter(|jump| jump_ids.contains(&jump.id)).collect();
+    for j in &imported_jumps {
+        store.save_jump_host((*j).clone())?;
     }
+    for h in &imported {
+        store.save_host((*h).clone())?;
+    }
+    println!("Imported {} host(s), {} jump host(s), {} warning(s):", imported.len(), imported_jumps.len(), res.warnings.len());
+    for h in &imported { println!("  + {} (mode: {:?})", h.name, h.proxy_mode); }
+    for j in &imported_jumps { println!("  + [jump] {} → {}:{} ({})", j.name, j.hostname, j.port, j.username); }
+    for name in skipped { println!("  = {name} (already exists; skipped)"); }
     for w in &res.warnings {
         println!("  ! {}", w);
     }

@@ -80,6 +80,36 @@ pub fn parse_ssh_config(content: &str) -> ImportResult {
 }
 
 pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], existing_jumps: &[JumpHost]) -> ImportResult {
+    let mut wildcard_or_global = true;
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        let mut parts = trimmed.split_whitespace();
+        let Some(key) = parts.next() else { continue };
+        let lower = key.to_ascii_lowercase();
+        let unsafe_reason = if lower == "include" || lower.starts_with("include=") || lower == "match" || lower.starts_with("match=") {
+            Some("Include and Match directives are not supported")
+        } else if lower.starts_with("proxyjump=") || lower.starts_with("proxycommand=") || lower.starts_with("host=") {
+            Some("the key=value form of Host or proxy directives is not supported")
+        } else {
+            if lower == "host" {
+                wildcard_or_global = parts.take_while(|name| !name.starts_with('#'))
+                    .any(|name| name.contains('*') || name.contains('?') || name.starts_with('!'));
+            }
+            if wildcard_or_global && (lower == "proxyjump" || lower == "proxycommand") {
+                Some("proxy directives in global or wildcard Host blocks are not supported")
+            } else {
+                None
+            }
+        };
+        if let Some(reason) = unsafe_reason {
+            return ImportResult {
+                hosts: Vec::new(),
+                jump_hosts: Vec::new(),
+                warnings: vec![format!("Line {}: {}; no hosts were imported. Resolve the configuration before retrying.", index + 1, reason)],
+            };
+        }
+    }
     let mut hosts = Vec::new();
     let mut warnings = Vec::new();
 
@@ -105,7 +135,11 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                       forward: bool,
                       forwards: &[PortForwardRule]| {
         for name in names {
-            if name == "*" || name.contains('?') || name.is_empty() {
+            if name.contains('*') || name.contains('?') || name.starts_with('!') {
+                warnings.push(format!("Host pattern '{}': wildcard and negated patterns are not imported as hosts.", name));
+                continue;
+            }
+            if name.is_empty() {
                 continue;
             }
 
@@ -218,7 +252,7 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
                             &port_forwards,
                         );
                     }
-                    current_names = parts.map(|s| s.to_string()).collect();
+                    current_names = parts.take_while(|name| !name.starts_with('#')).map(|s| s.to_string()).collect();
                     hostname.clear();
                     port = 22;
                     username.clear();
@@ -319,10 +353,13 @@ pub fn parse_ssh_config_with_existing(content: &str, existing_hosts: &[Host], ex
             _ => (None, raw_ref.as_str()),
         };
         let ref_name = ref_name.to_string();
-        let target = hosts
-            .iter()
+        let target = existing_hosts.iter()
             .find(|h| h.name.eq_ignore_ascii_case(&ref_name) && h.proxy_mode == ProxyMode::Direct)
             .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone(), None))
+            .or_else(|| hosts
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(&ref_name) && h.proxy_mode == ProxyMode::Direct)
+            .map(|h| (h.hostname.clone(), h.port, h.username.clone(), h.auth.clone(), None)))
             .or_else(|| existing_jumps.iter().find(|j| j.name.eq_ignore_ascii_case(&ref_name))
                 .map(|j| (j.hostname.clone(), j.port, j.username.clone(), j.auth.clone(), Some(j.id.clone()))))
             .or_else(|| existing_hosts.iter().find(|h| h.name.eq_ignore_ascii_case(&ref_name) && h.proxy_mode == ProxyMode::Direct)

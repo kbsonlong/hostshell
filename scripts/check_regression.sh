@@ -24,12 +24,17 @@ HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-c
 grep -F 'jump(' "$SCRATCH/hosts.out" >/dev/null || fail "ProxyJump host is not linked"
 grep -F 'auth:agent' "$SCRATCH/hosts.out" >/dev/null || fail "agent fallback auth missing in imported hosts"
 grep -F 'jump → engineer@jump.example.test:32200' "$SCRATCH/jumps.out" >/dev/null || fail "jump host asset missing"
-# Re-import must replace by name, not duplicate entries.
+# Re-import must preserve existing hosts without duplicates.
 HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli import crates/hostshell-core/tests/fixtures/joyy-like.config >/dev/null
+HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli list > "$SCRATCH/reimport.out"
+cmp -s "$SCRATCH/hosts.out" "$SCRATCH/reimport.out" || fail "re-import changed existing hosts"
 HOSTS="$(HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli list | grep -c '^  \[')"
 JUMPS="$(HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli list-jumps | grep -c '^  \[')"
 [ "$HOSTS" -eq 4 ] || fail "re-import duplicated hosts (count=$HOSTS)"
 [ "$JUMPS" -eq 1 ] || fail "re-import duplicated jump hosts (count=$JUMPS)"
+printf 'Host existing-jump-target\n HostName target.example.test\n ProxyJump jump\n' > "$SCRATCH/existing-jump.config"
+HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli import "$SCRATCH/existing-jump.config" >/dev/null
+HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli list | grep -E 'existing-jump-target .*jump\([^)]+' >/dev/null || fail "import did not resolve an existing jump host"
 
 step "macOS Swift wire-model contract"
 swiftc "$ROOT/apps/macos/Sources/HostShell/Core/Models.swift" "$ROOT/apps/macos/Sources/HostShell/Core/AIProvider.swift" "$ROOT/apps/macos/Tests/ModelContractCheck.swift" -framework Security -o "$SCRATCH/macos-model-check"

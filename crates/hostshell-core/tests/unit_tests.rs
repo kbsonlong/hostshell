@@ -89,7 +89,7 @@ Host jump
     Port 32200
     User engineer
 
-Host 10.*
+Host 10.0.0.1
     Port 32200
     User engineer
     ProxyJump engineer@jump
@@ -98,9 +98,32 @@ Host 10.*
     assert_eq!(result.hosts.len(), 2);
     assert_eq!(result.jump_hosts.len(), 1);
     assert_eq!(result.jump_hosts[0].name, "jump");
-    let target = result.hosts.iter().find(|h| h.name == "10.*").unwrap();
+    let target = result.hosts.iter().find(|h| h.name == "10.0.0.1").unwrap();
     assert_eq!(target.proxy_mode, ProxyMode::ProxyJump);
     assert_eq!(target.jump_host_ids, vec![result.jump_hosts[0].id.clone()]);
+}
+
+#[test]
+fn import_rejects_unresolved_proxy_context() {
+    for config in [
+        "Host target\n HostName target.test\nInclude extra.conf\n",
+        "Host target\n HostName target.test\nMatch host target\n ProxyJump gateway\n",
+        "ProxyJump gateway\nHost target\n HostName target.test\n",
+        "Host *\n ProxyJump gateway\nHost target\n HostName target.test\n",
+        "Host target\n ProxyJump=gateway\n",
+    ] {
+        let result = parse_ssh_config(config);
+        assert!(result.hosts.is_empty(), "unsafe configuration imported: {config}");
+        assert_eq!(result.warnings.len(), 1);
+    }
+}
+
+#[test]
+fn import_skips_wildcard_and_negated_host_patterns() {
+    let result = parse_ssh_config("Host web* db? !internal exact # comment\n HostName example.test\n");
+    assert_eq!(result.hosts.len(), 1);
+    assert_eq!(result.hosts[0].name, "exact");
+    assert_eq!(result.warnings.len(), 3);
 }
 
 #[test]
@@ -136,6 +159,17 @@ fn test_import_matches_saved_jump_and_preserves_forward_agent() {
     assert_eq!(override_result.jump_hosts[0].username, "other");
     assert_ne!(override_result.jump_hosts[0].name, "jump");
     assert_eq!(override_result.hosts[0].jump_host_ids, vec![override_result.jump_hosts[0].id.clone()]);
+}
+
+#[test]
+fn import_jump_uses_saved_host_when_import_name_conflicts() {
+    let existing = parse_ssh_config("Host jump\n HostName trusted.example\n User engineer\n").hosts.remove(0);
+    let result = hostshell_core::storage::importer::parse_ssh_config_with_existing(
+        "Host jump\n HostName other.example\nHost target\n ProxyJump jump\n", &[existing], &[],
+    );
+    assert_eq!(result.jump_hosts.len(), 1);
+    assert_eq!(result.jump_hosts[0].hostname, "trusted.example");
+    assert_eq!(result.hosts.iter().find(|host| host.name == "target").unwrap().jump_host_ids, vec![result.jump_hosts[0].id.clone()]);
 }
 
 #[test]
