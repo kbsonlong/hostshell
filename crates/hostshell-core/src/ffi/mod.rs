@@ -523,11 +523,16 @@ pub extern "C" fn hostshell_connect_with_auth_input(
         }
     });
 
+    let (stage_tx, mut stage_rx) = tokio::sync::mpsc::unbounded_channel::<StageEvent>();
+    let emit_stage = |event: StageEvent| {
+        if let Some(cb) = stage_cb {
+            if let Ok(json) = serde_json::to_string(&event) {
+                if let Ok(json) = CString::new(json) { cb(json.as_ptr(), user_data_addr as *mut c_void); }
+            }
+        }
+    };
     let result = eng.runtime.block_on(async {
-        tokio::select! {
-            biased;
-            _ = wait_for_connect_cancellation(cancelled) => Err(crate::error::HostShellError::Cancelled),
-            result = SshSession::connect_with_auth_input(
+        let connect = SshSession::connect_with_stage_sender(
                 host,
                 selected_jump_hosts,
                 stored_hosts,
@@ -539,8 +544,27 @@ pub extern "C" fn hostshell_connect_with_auth_input(
                 auth_input
                     .as_ref()
                     .map(|provider| provider as &crate::ssh::session::AuthInputProvider),
-            ) => result,
+                Some(stage_tx),
+            );
+        tokio::pin!(connect);
+        let cancellation = wait_for_connect_cancellation(cancelled);
+        tokio::pin!(cancellation);
+        let mut stage_open = true;
+        let result = loop {
+            tokio::select! {
+                biased;
+                _ = &mut cancellation => break Err(crate::error::HostShellError::Cancelled),
+                event = stage_rx.recv(), if stage_open => match event {
+                    Some(event) => emit_stage(event),
+                    None => stage_open = false,
+                },
+                result = &mut connect => break result,
+            }
+        };
+        while let Ok(event) = stage_rx.try_recv() {
+            emit_stage(event);
         }
+        result
     });
     unregister_connect_cancellation(cancellation_key);
 
@@ -569,7 +593,7 @@ pub extern "C" fn hostshell_connect_with_auth_input(
             eng.runtime.spawn(async move {
                 loop {
                     tokio::select! {
-                        stage_evt = handle.stage_rx.recv() => {
+                        stage_evt = stage_rx.recv() => {
                             match stage_evt {
                                 Some(evt) => {
                                     tracing::info!("SSH session stage: {:?}", evt.stage);
@@ -721,6 +745,13 @@ pub extern "C" fn hostshell_session_close(session: *mut SessionWrapper) {
 mod asset_list_tests {
     use super::*;
 
+    extern "C" fn record_initializing(json: *const c_char, context: *mut c_void) {
+        let message = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        if message.contains("initializing") {
+            unsafe { &*(context as *const AtomicBool) }.store(true, Ordering::Release);
+        }
+    }
+
     extern "C" fn capture_stage(json: *const c_char, context: *mut c_void) {
         let message = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
         unsafe { *(context as *mut String) = message; }
@@ -768,6 +799,38 @@ mod asset_list_tests {
         assert!(session.is_null());
         assert!(stage.contains("ConfigurationError"));
         assert!(stage.contains("Could not read saved hosts or jump hosts"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ffi_reports_connection_stage_before_handshake_finishes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(AtomicBool::new(false));
+        let server_seen = Arc::clone(&seen);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            for _ in 0..1000 {
+                if server_seen.load(Ordering::Acquire) { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(server_seen.load(Ordering::Acquire));
+            drop(stream);
+        });
+        let dir = std::env::temp_dir().join(format!("hostshell_ffi_stage_{}", uuid::Uuid::new_v4()));
+        let mut engine = EngineWrapper {
+            runtime: Runtime::new().unwrap(), store: ConfigStore::with_dir(dir.clone()).unwrap(),
+            #[cfg(target_os = "macos")]
+            _log_guard: None,
+        };
+        let host = crate::storage::importer::parse_ssh_config(&format!("Host target\n HostName 127.0.0.1\n Port {port}\n")).hosts.remove(0);
+        let host_json = CString::new(serde_json::to_string(&host).unwrap()).unwrap();
+        let session = hostshell_connect_with_auth_input(
+            &mut engine, host_json.as_ptr(), 80, 24, true, Some(record_initializing), None, None,
+            Arc::as_ptr(&seen).cast_mut().cast(),
+        );
+        assert!(session.is_null());
+        server.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

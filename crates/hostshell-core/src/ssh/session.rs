@@ -420,6 +420,21 @@ impl SshSession {
     }
 
     pub async fn connect_with_auth_input(
+        host: Host,
+        jump_hosts: Vec<JumpHost>,
+        stored_hosts: Vec<Host>,
+        known_hosts: Arc<Mutex<KnownHostsStore>>,
+        cols: u32,
+        rows: u32,
+        auto_accept_new_keys: bool,
+        terminal_settings: TerminalSessionSettings,
+        auth_input: Option<&AuthInputProvider>,
+    ) -> Result<SessionHandle> {
+        Self::connect_with_stage_sender(host, jump_hosts, stored_hosts, known_hosts, cols, rows,
+            auto_accept_new_keys, terminal_settings, auth_input, None).await
+    }
+
+    pub async fn connect_with_stage_sender(
         mut host: Host,
         mut jump_hosts: Vec<JumpHost>,
         stored_hosts: Vec<Host>,
@@ -429,6 +444,7 @@ impl SshSession {
         auto_accept_new_keys: bool,
         terminal_settings: TerminalSessionSettings,
         auth_input: Option<&AuthInputProvider>,
+        external_stage_tx: Option<mpsc::UnboundedSender<StageEvent>>,
     ) -> Result<SessionHandle> {
         if host.proxy_mode == ProxyMode::ProxyJump
             && (host.jump_host_ids.is_empty()
@@ -445,7 +461,8 @@ impl SshSession {
         }
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
         let (output_tx, output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let (stage_tx, stage_rx) = mpsc::unbounded_channel::<StageEvent>();
+        let (local_stage_tx, stage_rx) = mpsc::unbounded_channel::<StageEvent>();
+        let stage_tx = external_stage_tx.unwrap_or(local_stage_tx);
 
         let _ = stage_tx.send(StageEvent::now(ConnectionStage::Initializing));
 
