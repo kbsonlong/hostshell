@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use hostshell_core::model::host::AuthMethod;
-use hostshell_core::model::known_host::KnownHostsStore;
+use hostshell_core::model::known_host::{KnownHostEntry, KnownHostsStore};
 use hostshell_core::ssh::session::SshSession;
 use hostshell_core::storage::importer::parse_ssh_config;
 use russh::{Channel, ChannelId, Pty, server};
@@ -78,4 +79,44 @@ async fn ssh_session_handles_pty_input_output_resize_and_close() {
     assert_eq!(known.lock().unwrap().entries.len(), 1);
     session.close().unwrap();
     tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+}
+
+struct AuthCounter(Arc<AtomicUsize>);
+
+impl server::Handler for AuthCounter {
+    type Error = russh::Error;
+
+    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<server::Auth, Self::Error> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(server::Auth::Accept)
+    }
+}
+
+#[tokio::test]
+async fn changed_host_key_is_rejected_before_password_authentication() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut config = server::Config::default();
+    config.keys.push(russh::keys::PrivateKey::random(&mut rand::rng(), russh::keys::ssh_key::Algorithm::Ed25519).unwrap());
+    let auth_count = Arc::new(AtomicUsize::new(0));
+    let server_count = Arc::clone(&auth_count);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        if let Ok(session) = server::run_stream(Arc::new(config), stream, AuthCounter(server_count)).await {
+            let _ = session.await;
+        }
+    });
+    let mut host = parse_ssh_config(&format!("Host test\n HostName 127.0.0.1\n Port {port}\n User tester\n")).hosts.remove(0);
+    host.auth = AuthMethod::Password("test-password".into());
+    let mut known = KnownHostsStore::new();
+    known.add(KnownHostEntry {
+        hostname: "127.0.0.1".into(), port, key_type: "ssh-ed25519".into(),
+        fingerprint: "SHA256:previous".into(), raw_public_key: "previous".into(), added_at: 1,
+    });
+    let known = Arc::new(Mutex::new(known));
+    let result = SshSession::connect(host, vec![], vec![], Arc::clone(&known), 80, 24, true).await;
+    assert!(matches!(result, Err(hostshell_core::error::HostShellError::HostKeyRejected { .. })));
+    tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+    assert_eq!(auth_count.load(Ordering::SeqCst), 0);
+    assert_eq!(known.lock().unwrap().find("127.0.0.1", port).unwrap().fingerprint, "SHA256:previous");
 }
