@@ -150,6 +150,19 @@ fn import_proxyjump_chain_keeps_order_and_rejects_partial_resolution() {
     assert!(incomplete.warnings.iter().any(|warning| warning.contains("missing")));
 }
 
+#[tokio::test]
+async fn proxyjump_rejects_missing_or_reordered_hops_before_connecting() {
+    let result = parse_ssh_config("Host first\n HostName first.test\nHost second\n HostName second.test\nHost target\n ProxyJump first,second\n");
+    let host = result.hosts.iter().find(|host| host.name == "target").unwrap().clone();
+    let ordered: Vec<_> = host.jump_host_ids.iter().map(|id| result.jump_hosts.iter().find(|hop| &hop.id == id).unwrap().clone()).collect();
+    for hops in [vec![ordered[0].clone()], vec![ordered[1].clone(), ordered[0].clone()]] {
+        let outcome = hostshell_core::ssh::session::SshSession::connect(
+            host.clone(), hops, vec![], std::sync::Arc::new(std::sync::Mutex::new(KnownHostsStore::new())), 80, 24, true,
+        ).await;
+        assert!(matches!(outcome, Err(hostshell_core::error::HostShellError::Config(message)) if message.contains("incomplete or out of order")));
+    }
+}
+
 #[test]
 fn test_import_matches_saved_jump_and_preserves_forward_agent() {
     let jump = JumpHost {

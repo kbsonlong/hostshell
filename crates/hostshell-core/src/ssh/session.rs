@@ -430,6 +430,15 @@ impl SshSession {
         terminal_settings: TerminalSessionSettings,
         auth_input: Option<&AuthInputProvider>,
     ) -> Result<SessionHandle> {
+        if host.proxy_mode == ProxyMode::ProxyJump
+            && (host.jump_host_ids.is_empty()
+                || host.jump_host_ids.len() != jump_hosts.len()
+                || host.jump_host_ids.iter().zip(&jump_hosts).any(|(id, hop)| id != &hop.id))
+        {
+            return Err(HostShellError::Config(
+                "ProxyJump chain is incomplete or out of order; check the configured jump hosts before connecting.".into(),
+            ));
+        }
         host.auth = crate::storage::keys::resolve_auth(&host.auth).map_err(HostShellError::Config)?;
         for jump in &mut jump_hosts {
             jump.auth = crate::storage::keys::resolve_auth(&jump.auth).map_err(HostShellError::Config)?;
