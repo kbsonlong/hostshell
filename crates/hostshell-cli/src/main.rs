@@ -434,6 +434,28 @@ async fn cmd_quick_connect(
 
 // ── interactive session ───────────────────────────────────────────────────────
 
+fn print_connection_stage(stage: ConnectionStage) -> bool {
+    match stage {
+        ConnectionStage::ConnectingTransport { target, description } => eprintln!("[transport] {target} — {description}"),
+        ConnectionStage::BastionConnecting { hop, total_hops, bastion_name } => eprintln!("[bastion {hop}/{total_hops}] connecting to {bastion_name}"),
+        ConnectionStage::BastionAuthenticated { hop, total_hops, bastion_name } => eprintln!("[bastion {hop}/{total_hops}] authenticated to {bastion_name}"),
+        ConnectionStage::BastionTunnelReady { hop, total_hops, target } => eprintln!("[bastion {hop}/{total_hops}] tunnel ready → {target}"),
+        ConnectionStage::CloudflareHandshaking { endpoint, auth_type } => eprintln!("[cloudflare] WSS → {endpoint} ({auth_type})"),
+        ConnectionStage::CloudflareAuthenticated => eprintln!("[cloudflare] authenticated ✓"),
+        ConnectionStage::SshHandshaking { target } => eprintln!("[ssh] handshaking with {target}"),
+        ConnectionStage::HostKeyPrompt { host, fingerprint, key_type } => eprintln!("[hostkey] {host} ({key_type}) — {fingerprint}"),
+        ConnectionStage::AuthenticatingUser { username, method } => eprintln!("[auth] {username} via {method}"),
+        ConnectionStage::Connected { target } => eprintln!("[connected] {target} ✓  (Ctrl-C or `exit` to quit)\r"),
+        ConnectionStage::Disconnected { reason } => { eprintln!("\r\n[disconnected] {reason}"); return true; }
+        ConnectionStage::Failed { failed_stage, error_category, message, suggestion } => {
+            eprintln!("\r\n[ERROR] stage={failed_stage} category={error_category}\n  {message}\n  hint: {suggestion}\n");
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
 async fn run_interactive_session(
     host: Host,
     jump_hosts: Vec<JumpHost>,
@@ -446,8 +468,17 @@ async fn run_interactive_session(
 
     let known_hosts = store.known_hosts_ref();
     let stored_hosts = store.load_hosts()?;
+    let (stage_tx, mut stage_rx) = tokio::sync::mpsc::unbounded_channel::<hostshell_core::model::stage::StageEvent>();
+    let done = Arc::new(AtomicBool::new(false));
+    let done_clone = done.clone();
+    let stage_task = tokio::spawn(async move {
+        while let Some(evt) = stage_rx.recv().await {
+            if print_connection_stage(evt.stage) { break; }
+        }
+        done_clone.store(true, Ordering::Relaxed);
+    });
     let session = match
-        SshSession::connect(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true).await
+        SshSession::connect_with_stage_sender(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true, Default::default(), None, Some(stage_tx)).await
     {
         Ok(session) => {
             if let Err(error) = store.persist_known_hosts() {
@@ -457,70 +488,16 @@ async fn run_interactive_session(
             session
         }
         Err(error) => {
+            let _ = stage_task.await;
             store.persist_known_hosts()?;
             return Err(Box::new(error));
         }
     };
 
-    let mut stage_rx = session.stage_rx;
     let mut output_rx = session.output_rx;
     let cmd_tx = session.cmd_tx;
 
     // Flag set when session terminates so the stdin thread can stop
-    let done = Arc::new(AtomicBool::new(false));
-    let done_clone = done.clone();
-
-    // ── Stage event printer (runs on async task) ──────────────────────────
-    tokio::spawn(async move {
-        while let Some(evt) = stage_rx.recv().await {
-            match evt.stage {
-                ConnectionStage::ConnectingTransport { target, description } => {
-                    eprintln!("[transport] {} — {}", target, description);
-                }
-                ConnectionStage::BastionConnecting { hop, total_hops, bastion_name } => {
-                    eprintln!("[bastion {}/{}] connecting to {}", hop, total_hops, bastion_name);
-                }
-                ConnectionStage::BastionAuthenticated { hop, total_hops, bastion_name } => {
-                    eprintln!("[bastion {}/{}] authenticated to {}", hop, total_hops, bastion_name);
-                }
-                ConnectionStage::BastionTunnelReady { hop, total_hops, target } => {
-                    eprintln!("[bastion {}/{}] tunnel ready → {}", hop, total_hops, target);
-                }
-                ConnectionStage::CloudflareHandshaking { endpoint, auth_type } => {
-                    eprintln!("[cloudflare] WSS → {} ({})", endpoint, auth_type);
-                }
-                ConnectionStage::CloudflareAuthenticated => {
-                    eprintln!("[cloudflare] authenticated ✓");
-                }
-                ConnectionStage::SshHandshaking { target } => {
-                    eprintln!("[ssh] handshaking with {}", target);
-                }
-                ConnectionStage::HostKeyPrompt { host, fingerprint, key_type } => {
-                    eprintln!("[hostkey] {} ({}) — {}", host, key_type, fingerprint);
-                }
-                ConnectionStage::AuthenticatingUser { username, method } => {
-                    eprintln!("[auth] {} via {}", username, method);
-                }
-                ConnectionStage::Connected { target } => {
-                    eprintln!("[connected] {} ✓  (Ctrl-C or `exit` to quit)\r", target);
-                }
-                ConnectionStage::Disconnected { reason } => {
-                    eprintln!("\r\n[disconnected] {}", reason);
-                    break;
-                }
-                ConnectionStage::Failed { failed_stage, error_category, message, suggestion } => {
-                    eprintln!(
-                        "\r\n[ERROR] stage={} category={}\n  {}\n  hint: {}\n",
-                        failed_stage, error_category, message, suggestion
-                    );
-                    break;
-                }
-                _ => {}
-            }
-        }
-        done_clone.store(true, Ordering::Relaxed);
-    });
-
     // ── SSH output → stdout ───────────────────────────────────────────────
     let done2 = done.clone();
     tokio::spawn(async move {
@@ -532,7 +509,6 @@ async fn run_interactive_session(
         }
         done2.store(true, Ordering::Relaxed);
     });
-
     // ── stdin → SSH (OS thread to avoid blocking async runtime) ──────────
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let done3 = done.clone();
