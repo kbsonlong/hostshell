@@ -24,6 +24,8 @@ public struct MainView: View {
                 JumpHostListView(appVM: appVM)
             case .keys:
                 KeyManagementView(appVM: appVM)
+            case .knownHosts:
+                KnownHostsView()
             case .settings:
                 SettingsView(appVM: appVM)
             }

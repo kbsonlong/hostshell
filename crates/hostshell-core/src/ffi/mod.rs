@@ -162,6 +162,29 @@ pub extern "C" fn hostshell_free_string(ptr: *mut c_char) {
 }
 
 #[no_mangle]
+pub extern "C" fn hostshell_list_known_hosts(engine: *mut EngineWrapper) -> *mut c_char {
+    if engine.is_null() { return std::ptr::null_mut(); }
+    let store = unsafe { &(*engine).store }.known_hosts_ref();
+    let Ok(guard) = store.lock() else { return std::ptr::null_mut(); };
+    match serde_json::to_string(&guard.entries).ok().and_then(|json| CString::new(json).ok()) {
+        Some(json) => json.into_raw(),
+        None => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn hostshell_delete_known_host(engine: *mut EngineWrapper, hostname: *const c_char, port: u16, fingerprint: *const c_char) -> c_int {
+    if engine.is_null() || hostname.is_null() || fingerprint.is_null() { return -1; }
+    let Ok(hostname) = unsafe { CStr::from_ptr(hostname) }.to_str() else { return -1; };
+    let Ok(fingerprint) = unsafe { CStr::from_ptr(fingerprint) }.to_str() else { return -1; };
+    match unsafe { &(*engine).store }.remove_known_host(hostname, port, fingerprint) {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn hostshell_list_keys(engine: *mut EngineWrapper) -> *mut c_char {
     if engine.is_null() { return std::ptr::null_mut(); }
     let store = unsafe { &(*engine).store };

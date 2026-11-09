@@ -6,6 +6,7 @@ public enum NavigationCategory: String, CaseIterable, Identifiable {
     case localTerminal = "本地终端"
     case jumpHosts = "跳板机资产库"
     case keys = "证书管理"
+    case knownHosts = "主机信任记录"
     case settings = "设置与诊断"
 
     public var id: String { rawValue }
@@ -16,6 +17,7 @@ public enum NavigationCategory: String, CaseIterable, Identifiable {
         case .localTerminal: return "terminal"
         case .jumpHosts: return "arrow.triangle.branch"
         case .keys: return "key.fill"
+        case .knownHosts: return "checkmark.shield"
         case .settings: return "gearshape"
         }
     }

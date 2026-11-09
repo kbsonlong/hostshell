@@ -95,6 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args[1].as_str() {
         "list" => cmd_list(&store)?,
         "list-jumps" => cmd_list_jumps(&store)?,
+        "list-known-hosts" => cmd_list_known_hosts(&store)?,
+        "forget-known-host" => cmd_forget_known_host(&args, &store)?,
         "import" => cmd_import(&args, &store)?,
         "add" => cmd_add(&args, &store)?,
         "remove" => cmd_remove(&args, &store)?,
@@ -115,6 +117,8 @@ fn print_usage() {
     println!("Usage:");
     println!("  hostshell-cli list                         List configured hosts");
     println!("  hostshell-cli list-jumps                   List jump hosts");
+    println!("  hostshell-cli list-known-hosts             List trusted SSH host keys");
+    println!("  hostshell-cli forget-known-host <host> <port>  Remove a trusted key after confirmation");
     println!("  hostshell-cli import <ssh_config_file>     Import from ~/.ssh/config");
     println!("  hostshell-cli add <name> [options]         Add a host");
     println!("    --host <hostname>                        Target hostname (required)");
@@ -134,6 +138,41 @@ fn print_usage() {
 }
 
 // ── subcommands ───────────────────────────────────────────────────────────────
+
+fn cmd_list_known_hosts(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    let known_hosts = store.known_hosts_ref();
+    let guard = known_hosts.lock().map_err(|_| "known hosts lock poisoned")?;
+    println!("=== Trusted host keys ({}) ===", guard.entries.len());
+    for entry in &guard.entries {
+        println!("  {}:{} | {} | {}", entry.hostname, entry.port, entry.key_type, entry.fingerprint);
+    }
+    Ok(())
+}
+
+fn cmd_forget_known_host(args: &[String], store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 4 {
+        return Err("Usage: hostshell-cli forget-known-host <host> <port>".into());
+    }
+    let port: u16 = args[3].parse()?;
+    let known_hosts = store.known_hosts_ref();
+    let entry = known_hosts.lock().map_err(|_| "known hosts lock poisoned")?
+        .find(&args[2], port).cloned().ok_or("Trusted host key not found")?;
+    println!("{}:{} | {} | {}", entry.hostname, entry.port, entry.key_type, entry.fingerprint);
+    println!("Removing this key means the next connection automatically trusts the key presented by the server.");
+    print!("Type 'yes' to remove it: ");
+    io::stdout().flush()?;
+    let mut confirmation = String::new();
+    io::stdin().read_line(&mut confirmation)?;
+    if confirmation.trim() != "yes" {
+        println!("Cancelled.");
+        return Ok(());
+    }
+    if !store.remove_known_host(&entry.hostname, entry.port, &entry.fingerprint)? {
+        return Err("Trusted host key changed; inspect it again before deleting".into());
+    }
+    println!("Trusted host key removed.");
+    Ok(())
+}
 
 fn cmd_list(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
     let hosts = store.load_hosts()?;

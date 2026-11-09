@@ -207,6 +207,38 @@ fn test_known_hosts_store() {
 }
 
 #[test]
+fn known_host_removal_checks_fingerprint_and_persists() {
+    let dir = std::env::temp_dir().join(format!("hostshell_known_remove_{}", uuid::Uuid::new_v4()));
+    let store = ConfigStore::with_dir(dir.clone()).unwrap();
+    store.known_hosts_ref().lock().unwrap().add(KnownHostEntry {
+        hostname: "example.test".into(), port: 22, key_type: "ssh-ed25519".into(),
+        fingerprint: "SHA256:current".into(), raw_public_key: "key".into(), added_at: 1,
+    });
+    store.persist_known_hosts().unwrap();
+    assert!(!store.remove_known_host("example.test", 22, "SHA256:old").unwrap());
+    assert_eq!(store.load_known_hosts().unwrap().entries.len(), 1);
+    assert!(store.remove_known_host("example.test", 22, "SHA256:current").unwrap());
+    assert!(store.known_hosts_ref().lock().unwrap().entries.is_empty());
+    assert!(ConfigStore::with_dir(dir.clone()).unwrap().known_hosts_ref().lock().unwrap().entries.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn known_host_removal_keeps_memory_when_persistence_fails() {
+    let dir = std::env::temp_dir().join(format!("hostshell_known_failure_{}", uuid::Uuid::new_v4()));
+    let store = ConfigStore::with_dir(dir.clone()).unwrap();
+    store.known_hosts_ref().lock().unwrap().add(KnownHostEntry {
+        hostname: "example.test".into(), port: 22, key_type: "ssh-ed25519".into(),
+        fingerprint: "SHA256:current".into(), raw_public_key: "key".into(), added_at: 1,
+    });
+    std::fs::create_dir(dir.join("known_hosts.json")).unwrap();
+    assert!(store.remove_known_host("example.test", 22, "SHA256:current").is_err());
+    assert_eq!(store.known_hosts_ref().lock().unwrap().entries.len(), 1);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn test_stage_event_serialization() {
     let event = StageEvent::now(ConnectionStage::BastionConnecting {
         hop: 1,

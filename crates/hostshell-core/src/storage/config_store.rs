@@ -157,11 +157,31 @@ impl ConfigStore {
         let store = self
             .known_hosts
             .lock()
-            .map_err(|e| HostShellError::Config(format!("Lock poisoned: {}", e)))?
-            .clone();
+            .map_err(|e| HostShellError::Config(format!("Lock poisoned: {}", e)))?;
+        self.write_known_hosts(&store)
+    }
+
+    pub fn remove_known_host(&self, hostname: &str, port: u16, fingerprint: &str) -> Result<bool> {
+        let mut store = self.known_hosts.lock()
+            .map_err(|e| HostShellError::Config(format!("Lock poisoned: {}", e)))?;
+        if !store.find(hostname, port).is_some_and(|entry| entry.fingerprint == fingerprint) {
+            return Ok(false);
+        }
+        let mut updated = store.clone();
+        updated.remove(hostname, port);
+        self.write_known_hosts(&updated)?;
+        *store = updated;
+        Ok(true)
+    }
+
+    fn write_known_hosts(&self, store: &KnownHostsStore) -> Result<()> {
         let file_path = self.base_dir.join("known_hosts.json");
-        let data = serde_json::to_string_pretty(&store)?;
-        fs::write(&file_path, data).map_err(HostShellError::Io)?;
+        let data = serde_json::to_string_pretty(store)?;
+        let temp_path = self.base_dir.join(format!(".known_hosts.{}.tmp", uuid::Uuid::new_v4()));
+        if let Err(error) = fs::write(&temp_path, data).and_then(|_| fs::rename(&temp_path, &file_path)) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(HostShellError::Io(error));
+        }
         Ok(())
     }
 }

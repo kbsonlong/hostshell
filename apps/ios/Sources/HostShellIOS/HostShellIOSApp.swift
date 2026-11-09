@@ -10,6 +10,8 @@ import Network
 @_silgen_name("hostshell_engine_init") private func c_engine_init() -> OpaquePointer?
 @_silgen_name("hostshell_engine_free") private func c_engine_free(_ engine: OpaquePointer?)
 @_silgen_name("hostshell_list_keys") private func c_list_keys(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_list_known_hosts") private func c_list_known_hosts(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_delete_known_host") private func c_delete_known_host(_ engine: OpaquePointer?, _ hostname: UnsafePointer<CChar>?, _ port: UInt16, _ fingerprint: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_add_key") private func c_add_key(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_delete_key") private func c_delete_key(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_free_string") private func c_free_string(_ ptr: UnsafeMutablePointer<CChar>?)
@@ -37,6 +39,14 @@ struct ImportResponse: Decodable {
     let hosts: [Host]
     let jump_hosts: [JumpHost]?
     let warnings: [String]
+}
+
+private struct KnownHost: Decodable, Identifiable {
+    let hostname: String
+    let port: UInt16
+    let key_type: String
+    let fingerprint: String
+    var id: String { "\(hostname):\(port)" }
 }
 
 @MainActor
@@ -83,6 +93,16 @@ final class AppModel: ObservableObject {
         let rc = id.withCString { c_delete_key(engine, $0) }
         if rc == 0 { reload(); return nil }
         return rc == -2 ? "该证书仍被主机或 Agent 转发使用，请先解除引用。" : "删除失败，请检查 Keychain。"
+    }
+
+    fileprivate func knownHosts() -> [KnownHost]? { decodeArray(c_list_known_hosts(engine)) }
+
+    fileprivate func deleteKnownHost(_ host: KnownHost) -> Int32 {
+        host.hostname.withCString { hostname in
+            host.fingerprint.withCString { fingerprint in
+                c_delete_known_host(engine, hostname, host.port, fingerprint)
+            }
+        }
     }
 
     @discardableResult
@@ -358,6 +378,7 @@ struct HostListScreen: View {
                     Menu {
                         Button { activeSheet = .jumps } label: { Label("跳板机资产", systemImage: "point.topleft.down.curvedto.point.bottomright.up") }
                         Button { activeSheet = .keys } label: { Label("证书管理", systemImage: "key.fill") }
+                        Button { activeSheet = .knownHosts } label: { Label("主机信任记录", systemImage: "checkmark.shield") }
                         Button { activeSheet = .forwards } label: { Label("端口转发", systemImage: "arrow.left.arrow.right") }
                         Button { activeSheet = .importConfig } label: { Label("导入 SSH 配置", systemImage: "square.and.arrow.down") }
                         Button { activeSheet = .settings } label: { Label("终端设置", systemImage: "textformat") }
@@ -386,6 +407,7 @@ struct HostListScreen: View {
                 case .importConfig: ImportSheet()
                 case .jumps: JumpHostListSheet()
                 case .keys: KeyManagementSheet()
+                case .knownHosts: KnownHostsSheet()
                 case .forwards: PortForwardManagementSheet()
                 case .settings: IOSTerminalSettingsSheet()
                 }
@@ -398,7 +420,7 @@ struct HostListScreen: View {
 }
 
 private enum HostListSheet: Identifiable {
-    case newHost, editHost(Host), importConfig, jumps, keys, forwards, settings
+    case newHost, editHost(Host), importConfig, jumps, keys, knownHosts, forwards, settings
     var id: String {
         switch self {
         case .newHost: return "new-host"
@@ -406,6 +428,7 @@ private enum HostListSheet: Identifiable {
         case .importConfig: return "import-config"
         case .jumps: return "jumps"
         case .keys: return "keys"
+        case .knownHosts: return "known-hosts"
         case .forwards: return "forwards"
         case .settings: return "settings"
         }
@@ -801,6 +824,60 @@ struct KeyManagementSheet: View {
                 Button("好", role: .cancel) { error = nil }
             } message: { Text(error ?? "") }
         }
+    }
+}
+
+private struct KnownHostsSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [KnownHost] = []
+    @State private var pendingDelete: KnownHost?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if entries.isEmpty {
+                    Text("暂无主机信任记录").foregroundStyle(.secondary)
+                }
+                ForEach(entries) { entry in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("\(entry.hostname):\(entry.port)").font(.headline)
+                        Text(entry.key_type).font(.caption).foregroundStyle(.secondary)
+                        Text(entry.fingerprint).font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) { pendingDelete = entry } label: { Label("删除", systemImage: "trash") }
+                    }
+                }
+            }
+            .navigationTitle("主机信任记录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .onAppear(perform: reload)
+            .confirmationDialog("删除主机信任记录？", isPresented: Binding(
+                get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+            ), titleVisibility: .visible, presenting: pendingDelete) { entry in
+                Button("删除", role: .destructive) {
+                    let result = model.deleteKnownHost(entry)
+                    pendingDelete = nil
+                    if result != 0 { error = result == 1 ? "记录已变化，请刷新后重试。" : "删除失败，请检查本地存储。" }
+                    reload()
+                }
+                Button("取消", role: .cancel) { pendingDelete = nil }
+            } message: { entry in
+                Text("删除 \(entry.hostname):\(entry.port) 的指纹后，下次连接将自动信任服务器提供的密钥。请先通过可信渠道核对新指纹。")
+            }
+            .alert("主机信任记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+
+    private func reload() {
+        guard let loaded = model.knownHosts() else { error = "无法读取主机信任记录。"; return }
+        entries = loaded.sorted { ($0.hostname, $0.port) < ($1.hostname, $1.port) }
     }
 }
 

@@ -7,6 +7,18 @@ func c_hostshell_list_keys(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CCh
 func c_hostshell_add_key(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_delete_key")
 func c_hostshell_delete_key(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
+@_silgen_name("hostshell_list_known_hosts")
+func c_hostshell_list_known_hosts(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("hostshell_delete_known_host")
+func c_hostshell_delete_known_host(_ engine: OpaquePointer?, _ hostname: UnsafePointer<CChar>?, _ port: UInt16, _ fingerprint: UnsafePointer<CChar>?) -> Int32
+
+struct KnownHost: Decodable, Identifiable {
+    let hostname: String
+    let port: UInt16
+    let key_type: String
+    let fingerprint: String
+    var id: String { "\(hostname):\(port)" }
+}
 
 // C-ABI declarations matching crates/hostshell-core/src/ffi/mod.rs
 @_silgen_name("hostshell_engine_init")
@@ -174,6 +186,20 @@ public final class HostShellBridge: @unchecked Sendable {
     }
 
     public func deleteKey(_ id: String) -> Int32 { id.withCString { c_hostshell_delete_key(enginePtr, $0) } }
+
+    func listKnownHosts() -> [KnownHost]? {
+        guard let ptr = c_hostshell_list_known_hosts(enginePtr) else { return nil }
+        defer { c_hostshell_free_string(ptr) }
+        return try? JSONDecoder().decode([KnownHost].self, from: Data(String(cString: ptr).utf8))
+    }
+
+    func deleteKnownHost(_ host: KnownHost) -> Int32 {
+        host.hostname.withCString { hostname in
+            host.fingerprint.withCString { fingerprint in
+                c_hostshell_delete_known_host(enginePtr, hostname, host.port, fingerprint)
+            }
+        }
+    }
 
     deinit {
         if let ptr = enginePtr {

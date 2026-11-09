@@ -29,6 +29,10 @@ EngineWrapper *hostshell_engine_init(void);
 void hostshell_engine_free(EngineWrapper *engine);
 void hostshell_free_string(char *ptr);
 
+char *hostshell_list_known_hosts(EngineWrapper *engine);
+/* Returns 0 on deletion, 1 if the entry no longer matches, -1 on error. */
+int hostshell_delete_known_host(EngineWrapper *engine, const char *hostname, uint16_t port, const char *fingerprint);
+
 char *hostshell_list_hosts(EngineWrapper *engine);
 int hostshell_save_host(EngineWrapper *engine, const char *host_json);
 int hostshell_delete_host(EngineWrapper *engine, const char *host_id);
