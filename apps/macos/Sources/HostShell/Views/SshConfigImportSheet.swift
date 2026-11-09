@@ -8,6 +8,12 @@ public struct SshConfigImportSheet: View {
     @State private var previewResponse: SshConfigImportResponse? = nil
     @State private var errorMessage: String? = nil
     @State private var showingFilePicker = false
+    @State private var parsedText = ""
+
+    private func conflicts(_ host: Host) -> Bool {
+        appVM.hosts.contains { $0.name == host.name && $0.id != host.id }
+            || previewResponse?.hosts.first(where: { $0.name == host.name })?.id != host.id
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -90,6 +96,8 @@ public struct SshConfigImportSheet: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(h.name).fontWeight(.medium)
+                                Text(conflicts(h) ? "名称重复，将跳过" : "新主机")
+                                    .font(.caption).foregroundColor(conflicts(h) ? .orange : .secondary)
                                 Text("\(h.username)@\(h.hostname):\(h.port)").font(.caption).foregroundColor(.secondary)
                                 ForEach(h.port_forwards ?? []) { rule in
                                     Label(rule.displayName, systemImage: "point.3.connected.trianglepath.dotted")
@@ -117,19 +125,15 @@ public struct SshConfigImportSheet: View {
 
             HStack {
                 Spacer()
-                Button("导入全部主机") {
-                    if let resp = previewResponse {
-                        for h in resp.hosts {
-                            appVM.saveHost(h)
-                        }
-                        for j in resp.jumpHosts ?? [] {
-                            appVM.saveJumpHost(j)
-                        }
-                        dismiss()
-                    }
+                if previewResponse != nil && configText != parsedText {
+                    Text("配置已修改，请重新解析。").font(.caption).foregroundColor(.orange)
                 }
+                if appVM.assetLoadError != nil {
+                    Text("资产列表不可用，请先恢复读取。 ").font(.caption).foregroundColor(.orange)
+                }
+                Button("导入新主机", action: importHosts)
                 .buttonStyle(.borderedProminent)
-                .disabled(previewResponse?.hosts.isEmpty ?? true)
+                .disabled((previewResponse?.hosts.allSatisfy { conflicts($0) } ?? true) || configText != parsedText || appVM.assetLoadError != nil)
             }
             .padding()
             .background(Color(NSColor.windowBackgroundColor))
@@ -165,12 +169,32 @@ public struct SshConfigImportSheet: View {
         }
         guard let response = HostShellBridge.shared.importSshConfig(text: configText) else {
             previewResponse = nil
-            errorMessage = "配置解析结果无法读取。请查看 Console 中的 HostShellBridge 解码错误详情。"
+            errorMessage = "配置解析失败。请检查配置内容及本地主机、跳板机资产是否可读取。"
             return
         }
         previewResponse = response
+        parsedText = configText
         errorMessage = response.hosts.isEmpty
             ? "没有识别到可导入的 Host。请粘贴文件内容或使用上方选择文件，不能只输入文件路径。"
             : nil
+    }
+
+    private func importHosts() {
+        guard let response = previewResponse, configText == parsedText, appVM.assetLoadError == nil else { return }
+        let hosts = response.hosts.filter { !conflicts($0) }
+        let jumpIDs = Set(hosts.flatMap { $0.jump_host_ids })
+        for jump in response.jumpHosts ?? [] where jumpIDs.contains(jump.id) {
+            guard appVM.saveJumpHost(jump) else {
+                errorMessage = "保存跳板机失败，已保存的资产会保留；请检查本地文件后重试。"
+                return
+            }
+        }
+        for host in hosts {
+            guard appVM.saveHost(host) else {
+                errorMessage = "保存主机失败，已保存的资产会保留；请检查本地文件后重试。"
+                return
+            }
+        }
+        dismiss()
     }
 }

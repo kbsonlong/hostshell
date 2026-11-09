@@ -92,12 +92,15 @@ public final class AppViewModel: ObservableObject {
         isShowingHostEditor = true
     }
 
-    public func saveHost(_ host: Host) {
+    @discardableResult
+    public func saveHost(_ host: Host) -> Bool {
         if bridge.saveHost(host) {
             loadData()
             isShowingHostEditor = false
             editingHost = nil
+            return true
         }
+        return false
     }
 
     public func deleteHost(_ host: Host) {
@@ -116,12 +119,15 @@ public final class AppViewModel: ObservableObject {
         isShowingJumpHostEditor = true
     }
 
-    public func saveJumpHost(_ jh: JumpHost) {
+    @discardableResult
+    public func saveJumpHost(_ jh: JumpHost) -> Bool {
         if bridge.saveJumpHost(jh) {
             loadData()
             isShowingJumpHostEditor = false
             editingJumpHost = nil
+            return true
         }
+        return false
     }
 
     public func deleteJumpHost(_ jh: JumpHost) {

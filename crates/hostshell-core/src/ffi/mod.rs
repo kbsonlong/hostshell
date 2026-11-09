@@ -361,7 +361,10 @@ pub extern "C" fn hostshell_import_ssh_config(engine: *mut EngineWrapper, config
     };
     let (hosts, jumps) = if engine.is_null() { (vec![], vec![]) } else {
         let store = unsafe { &(*engine).store };
-        (store.load_hosts().unwrap_or_default(), store.load_jump_hosts().unwrap_or_default())
+        let (Ok(hosts), Ok(jumps)) = (store.load_hosts(), store.load_jump_hosts()) else {
+            return std::ptr::null_mut();
+        };
+        (hosts, jumps)
     };
     let res = parse_ssh_config_with_existing(str_slice, &hosts, &jumps);
     let json = serde_json::json!({

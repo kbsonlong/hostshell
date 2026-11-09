@@ -121,11 +121,16 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    func save(_ jump: JumpHost) {
-        guard let data = try? JSONEncoder().encode(jump), let json = String(data: data, encoding: .utf8) else { return }
+    @discardableResult
+    func save(_ jump: JumpHost) -> Bool {
+        guard let data = try? JSONEncoder().encode(jump), let json = String(data: data, encoding: .utf8) else {
+            error = "无法编码跳板机配置。"
+            return false
+        }
         let rc = json.withCString { c_save_jump(engine, $0) }
-        if rc != 0 { error = "保存跳板机失败（错误码 \(rc)）" }
+        if rc != 0 { error = "保存跳板机失败（错误码 \(rc)）"; return false }
         reload()
+        return true
     }
 
     func delete(_ host: Host) {
@@ -1133,6 +1138,12 @@ struct ImportSheet: View {
     @State private var result: ImportResponse?
     @State private var errorMessage: String?
     @State private var showingFilePicker = false
+    @State private var parsedText = ""
+
+    private func conflicts(_ host: Host) -> Bool {
+        model.hosts.contains { $0.name == host.name && $0.id != host.id }
+            || result?.hosts.first(where: { $0.name == host.name })?.id != host.id
+    }
 
     var body: some View {
         NavigationStack {
@@ -1164,6 +1175,8 @@ struct ImportSheet: View {
                         ForEach(result.hosts) { host in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(host.name).font(.headline)
+                                Text(conflicts(host) ? "名称重复，将跳过" : "新主机")
+                                    .font(.caption).foregroundStyle(conflicts(host) ? .orange : .secondary)
                                 Text("\(host.username)@\(host.hostname):\(host.port) · \(host.proxy_mode.badgeName)")
                                     .font(.caption).foregroundStyle(.secondary)
                                 ForEach(host.port_forwards ?? []) { rule in
@@ -1176,12 +1189,38 @@ struct ImportSheet: View {
                             Text(warning).foregroundStyle(.orange)
                         }
                     }
-                    Button("导入 \(result.hosts.count) 台主机和 \(result.jump_hosts?.count ?? 0) 个跳板机") {
-                        for host in result.hosts { model.save(host) }
-                        for jump in result.jump_hosts ?? [] { model.save(jump) }
+                    Button("导入新主机") {
+                        guard text == parsedText, model.assetLoadError == nil else {
+                            errorMessage = "配置已修改，请重新解析后导入。"
+                            return
+                        }
+                        let hosts = result.hosts.filter { !conflicts($0) }
+                        let jumpIDs = Set(hosts.flatMap { $0.jump_host_ids })
+                        for jump in result.jump_hosts ?? [] where jumpIDs.contains(jump.id) {
+                            guard model.save(jump) else {
+                                errorMessage = (model.error ?? "保存跳板机失败。") + "已保存的资产会保留。"
+                                model.error = nil
+                                return
+                            }
+                        }
+                        for host in hosts {
+                            guard model.save(host) else {
+                                errorMessage = (model.error ?? "保存主机失败。") + "已保存的资产会保留。"
+                                model.error = nil
+                                return
+                            }
+                        }
                         dismiss()
                     }
-                    .disabled(result.hosts.isEmpty)
+                    .disabled(result.hosts.allSatisfy { conflicts($0) } || text != parsedText || model.assetLoadError != nil)
+                    if text != parsedText {
+                        Text("配置已修改，请重新解析。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                    if model.assetLoadError != nil {
+                        Text("资产列表不可用，请先恢复读取。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                 }
             }
             .navigationTitle("导入 SSH 配置")
@@ -1220,10 +1259,11 @@ struct ImportSheet: View {
         }
         guard let parsed = model.importConfig(text) else {
             result = nil
-            errorMessage = "配置解析失败。请确认文件是 UTF-8 编码的 OpenSSH config。"
+            errorMessage = "配置解析失败。请检查配置内容及本地主机、跳板机资产是否可读取。"
             return
         }
         result = parsed
+        parsedText = text
         errorMessage = parsed.hosts.isEmpty
             ? "没有识别到可导入的 Host。请确认粘贴的是配置文件内容，而不是文件路径；Host * 通配规则会被跳过。"
             : nil
