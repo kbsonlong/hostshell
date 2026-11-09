@@ -7,6 +7,18 @@ struct KeyManagementView: View {
     @State private var key = ""
     @State private var passphrase = ""
     @State private var error: String?
+    @State private var pendingDelete: SSHKeyMetadata?
+
+    private func usageText(_ item: SSHKeyMetadata) -> String {
+        let hosts = appVM.hosts.filter { $0.auth == .keyRef(id: item.id) }.count
+        let jumps = appVM.jumpHosts.filter { $0.auth == .keyRef(id: item.id) }.count
+        let forwards = appVM.hosts.filter { $0.forward_agent_key_ids?.contains(item.id) == true }.count
+        var parts: [String] = []
+        if hosts > 0 { parts.append("\(hosts) 台主机") }
+        if jumps > 0 { parts.append("\(jumps) 个跳板机") }
+        if forwards > 0 { parts.append("\(forwards) 处 Agent 转发") }
+        return parts.isEmpty ? "未被引用" : "被 " + parts.joined(separator: " · ") + " 引用"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -18,9 +30,10 @@ struct KeyManagementView: View {
                     VStack(alignment: .leading) {
                         Text(item.name).font(.headline)
                         Text("\(item.algorithm) · \(item.fingerprint)").font(.caption).textSelection(.enabled)
+                        Text(usageText(item)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("删除", role: .destructive) { error = appVM.deleteKey(item) }
+                    Button("删除", role: .destructive) { pendingDelete = item }
                 }.padding(.vertical, 4)
             }.frame(minHeight: 120)
             GroupBox("导入私钥") {
@@ -44,6 +57,18 @@ struct KeyManagementView: View {
                 }.padding(6)
             }
             if let error { Text(error).foregroundStyle(.red) }
-        }.padding(20)
+        }
+        .padding(20)
+        .confirmationDialog("删除证书？", isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+        ), titleVisibility: .visible, presenting: pendingDelete) { item in
+            Button("删除 \(item.name)", role: .destructive) {
+                error = appVM.deleteKey(item)
+                pendingDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { item in
+            Text("\(usageText(item))。删除后私钥将从 Keychain 移除；被引用的证书需先解除引用。")
+        }
     }
 }
