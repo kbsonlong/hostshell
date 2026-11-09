@@ -468,7 +468,24 @@ pub extern "C" fn hostshell_connect_with_auth_input(
         match host.auth { crate::model::host::AuthMethod::Agent => "agent", crate::model::host::AuthMethod::Password(_) => "password", crate::model::host::AuthMethod::PrivateKey { .. } | crate::model::host::AuthMethod::KeyRef { .. } => "private_key" }
     );
 
-    let all_jump_hosts = eng.store.load_jump_hosts().unwrap_or_default();
+    let (all_jump_hosts, stored_hosts) = match (eng.store.load_jump_hosts(), eng.store.load_hosts()) {
+        (Ok(jumps), Ok(hosts)) => (jumps, hosts),
+        _ => {
+            unregister_connect_cancellation(cancellation_key);
+            if let Some(cb) = stage_cb {
+                let event = StageEvent::now(crate::model::stage::ConnectionStage::Failed {
+                    failed_stage: "Initializing".into(),
+                    error_category: "ConfigurationError".into(),
+                    message: "Could not read saved hosts or jump hosts.".into(),
+                    suggestion: "Check local configuration files and permissions before reconnecting.".into(),
+                });
+                if let Ok(json) = serde_json::to_string(&event) {
+                    if let Ok(json) = CString::new(json) { cb(json.as_ptr(), user_data); }
+                }
+            }
+            return std::ptr::null_mut();
+        }
+    };
     let selected_jump_hosts: Vec<JumpHost> = host
         .jump_host_ids
         .iter()
@@ -476,7 +493,6 @@ pub extern "C" fn hostshell_connect_with_auth_input(
         .collect();
 
     let known_hosts = eng.store.known_hosts_ref();
-    let stored_hosts = eng.store.load_hosts().unwrap_or_default();
     let user_data_addr = user_data as usize;
     let auth_input = auth_input_cb.map(|callback| {
         move |name: &str, instructions: &str, prompt: &str, echo: bool| {
@@ -705,6 +721,11 @@ pub extern "C" fn hostshell_session_close(session: *mut SessionWrapper) {
 mod asset_list_tests {
     use super::*;
 
+    extern "C" fn capture_stage(json: *const c_char, context: *mut c_void) {
+        let message = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
+        unsafe { *(context as *mut String) = message; }
+    }
+
     #[test]
     fn ffi_reports_corrupt_assets_instead_of_empty_lists() {
         let dir = std::env::temp_dir().join(format!("hostshell_ffi_{}", uuid::Uuid::new_v4()));
@@ -724,6 +745,29 @@ mod asset_list_tests {
         std::fs::write(dir.join("jumphosts.json"), b"{ invalid").unwrap();
         assert!(hostshell_list_hosts(ptr).is_null());
         assert!(hostshell_list_jump_hosts(ptr).is_null());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ffi_connection_rejects_unreadable_assets_before_network_access() {
+        let dir = std::env::temp_dir().join(format!("hostshell_ffi_connect_{}", uuid::Uuid::new_v4()));
+        let store = ConfigStore::with_dir(dir.clone()).unwrap();
+        let mut engine = EngineWrapper {
+            runtime: Runtime::new().unwrap(), store,
+            #[cfg(target_os = "macos")]
+            _log_guard: None,
+        };
+        std::fs::write(dir.join("jumphosts.json"), b"{ invalid").unwrap();
+        let host = crate::storage::importer::parse_ssh_config("Host target\n HostName example.test\n").hosts.remove(0);
+        let host_json = CString::new(serde_json::to_string(&host).unwrap()).unwrap();
+        let mut stage = String::new();
+        let session = hostshell_connect_with_auth_input(
+            &mut engine, host_json.as_ptr(), 80, 24, true, Some(capture_stage), None, None,
+            (&mut stage as *mut String).cast(),
+        );
+        assert!(session.is_null());
+        assert!(stage.contains("ConfigurationError"));
+        assert!(stage.contains("Could not read saved hosts or jump hosts"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

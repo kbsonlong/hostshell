@@ -445,7 +445,7 @@ async fn run_interactive_session(
     let (cols, rows) = terminal::terminal_size();
 
     let known_hosts = store.known_hosts_ref();
-    let stored_hosts = store.load_hosts().unwrap_or_default();
+    let stored_hosts = store.load_hosts()?;
     let session = match
         SshSession::connect(host, jump_hosts, stored_hosts, known_hosts, cols, rows, true).await
     {
