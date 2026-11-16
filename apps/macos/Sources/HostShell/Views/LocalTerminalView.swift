@@ -173,6 +173,7 @@ private final class LocalTerminalWindowController: NSWindowController, NSWindowD
 private struct LocalTerminalWindowContent: View {
     let onClose: () -> Void
     @State private var processStatus = "正在启动登录 Shell…"
+
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue

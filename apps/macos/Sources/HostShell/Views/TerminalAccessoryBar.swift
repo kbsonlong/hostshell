@@ -8,6 +8,8 @@ public struct TerminalAccessoryBar: View {
             Group {
                 button(title: "ESC", action: { onKey("ESC") })
                 button(title: "TAB", action: { onKey("TAB") })
+                button(title: "⇧TAB", action: { onKey("SHIFT_TAB") })
+                button(title: "Ctrl-I", action: { onKey("CTRL_I") })
                 Divider().frame(height: 18)
                 button(title: "Ctrl+C", action: { onKey("CTRL_C") }, isHighlighted: true)
                 button(title: "Ctrl+D", action: { onKey("CTRL_D") })

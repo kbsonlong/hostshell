@@ -2159,11 +2159,11 @@ private struct IOSTerminalSettingsSheet: View {
 }
 
 private enum TerminalShortcut: String, CaseIterable, Identifiable {
-    case escape, tab, controlC, controlD, controlA, controlE, controlL, controlZ
+    case escape, tab, shiftTab, controlI, controlC, controlD, controlA, controlE, controlL, controlZ
     case altB, altF, altLeft, altRight
     case left, up, down, right
 
-    static let defaultIDs = ["escape", "tab", "controlC", "controlD", "up", "down"]
+    static let defaultIDs = ["escape", "tab", "shiftTab", "controlI", "controlC", "controlD", "up", "down"]
 
     var id: String { rawValue }
 
@@ -2171,6 +2171,8 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
         switch self {
         case .escape: return "Esc"
         case .tab: return "Tab"
+        case .shiftTab: return "⇧Tab"
+        case .controlI: return "Ctrl-I"
         case .controlC: return "Ctrl-C"
         case .controlD: return "Ctrl-D"
         case .controlA: return "Ctrl-A"
@@ -2192,6 +2194,8 @@ private enum TerminalShortcut: String, CaseIterable, Identifiable {
         switch self {
         case .escape: return [0x1B]
         case .tab: return [0x09]
+        case .shiftTab: return [0x1B, 0x5B, 0x5A]
+        case .controlI: return [0x09]
         case .controlC: return [0x03]
         case .controlD: return [0x04]
         case .controlA: return [0x01]

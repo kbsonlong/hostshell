@@ -206,6 +206,10 @@ public final class SessionViewModel: ObservableObject {
             sendBytes([0x1B])
         case "TAB":
             sendBytes([0x09])
+        case "SHIFT_TAB":
+            sendBytes([0x1B, 0x5B, 0x5A])
+        case "CTRL_I":
+            sendBytes([0x09])
         case "CTRL_C":
             sendBytes([0x03])
         case "CTRL_D":
