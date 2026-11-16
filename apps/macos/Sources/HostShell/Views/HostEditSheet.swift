@@ -3,6 +3,7 @@ import SwiftUI
 public struct HostEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var appVM: AppViewModel
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var name: String
     @State private var hostname: String
@@ -97,8 +98,19 @@ public struct HostEditSheet: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text(originalHost == nil ? "新建主机配置" : "编辑主机配置")
-                    .font(.headline)
+                Image(systemName: "server.rack")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(HostShellPalette.cyan)
+                    .frame(width: 32, height: 32)
+                    .background(HostShellPalette.navy)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(originalHost == nil ? "新建主机配置" : "编辑主机配置")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("配置连接信息、认证方式和代理链路")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("取消") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -157,7 +169,11 @@ public struct HostEditSheet: View {
                                     TextEditor(text: $privateKeyText)
                                         .font(.system(.caption, design: .monospaced))
                                         .frame(height: 90)
-                                        .border(Color.secondary.opacity(0.2))
+                                        .scrollContentBackground(.hidden)
+                                        .padding(7)
+                                        .background(HostShellPalette.deep)
+                                        .foregroundStyle(HostShellPalette.cyan)
+                                        .clipShape(RoundedRectangle(cornerRadius: 7))
 
                                     HStack {
                                         Button("从私钥文件读取...") {
@@ -200,12 +216,41 @@ public struct HostEditSheet: View {
                     // Proxy Mode
                     GroupBox(label: Label("代理与网络通道 (三选一)", systemImage: "network")) {
                         VStack(alignment: .leading, spacing: 12) {
-                            Picker("网络链路模式", selection: $proxyMode) {
+                            VStack(spacing: 7) {
                                 ForEach(ProxyMode.allCases) { mode in
-                                    Text(mode.displayName).tag(mode)
+                                    Button {
+                                        proxyMode = mode
+                                    } label: {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: proxySymbol(for: mode))
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(HostShellPalette.proxyColor(mode))
+                                                .frame(width: 28, height: 28)
+                                                .background(HostShellPalette.proxyColor(mode).opacity(0.12))
+                                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(mode.displayName)
+                                                    .font(.system(size: 12, weight: .medium))
+                                                Text(proxyDescription(for: mode))
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            Image(systemName: proxyMode == mode ? "largecircle.fill.circle" : "circle")
+                                                .foregroundStyle(proxyMode == mode ? HostShellPalette.blue : Color.secondary.opacity(0.5))
+                                        }
+                                        .padding(9)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(proxyMode == mode ? HostShellPalette.blue.opacity(0.07) : HostShellPalette.panel(colorScheme))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(proxyMode == mode ? HostShellPalette.blue.opacity(0.55) : Color.primary.opacity(0.07), lineWidth: 1)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
-                            .pickerStyle(.radioGroup)
 
                             if proxyMode == .proxyJump {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -357,9 +402,13 @@ public struct HostEditSheet: View {
                     }
 
                     if let err = errorMessage {
-                        Text(err)
+                        Label(err, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundColor(.red)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.red.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
                     }
                 }
                 .padding()
@@ -369,6 +418,8 @@ public struct HostEditSheet: View {
 
             // Footer
             HStack {
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("保存配置") {
                     validateAndSave()
@@ -379,7 +430,8 @@ public struct HostEditSheet: View {
             .padding()
             .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(width: 540, height: 620)
+        .frame(width: 600, height: 700)
+        .tint(HostShellPalette.blue)
     }
 
     private func forwardKeyBinding(_ id: String) -> Binding<Bool> {
@@ -390,6 +442,24 @@ public struct HostEditSheet: View {
                 forwardAgentHostIds.removeAll { $0 == id }
             }
         })
+    }
+
+    private func proxySymbol(for mode: ProxyMode) -> String {
+        switch mode {
+        case .direct: return "link"
+        case .proxyJump: return "arrow.triangle.branch"
+        case .cloudflareAccess: return "shield.checkerboard"
+        case .proxyCommand: return "terminal"
+        }
+    }
+
+    private func proxyDescription(for mode: ProxyMode) -> String {
+        switch mode {
+        case .direct: return "标准 TCP 直连目标主机"
+        case .proxyJump: return "经由一个或多个跳板节点转发"
+        case .cloudflareAccess: return "通过 Cloudflare Access 建立安全通道"
+        case .proxyCommand: return "使用本地命令建立自定义字节流"
+        }
     }
 
     private var bindEndpointTitle: String {

@@ -2,6 +2,8 @@ import SwiftUI
 
 public struct SettingsView: View {
     @ObservedObject var appVM: AppViewModel
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppTheme.modeKey) private var themeModeRaw = AppThemeMode.system.rawValue
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -59,6 +61,7 @@ public struct SettingsView: View {
 
             TabView {
                 settingsScroll {
+                    appearanceThemeSection
                     appearanceSection
                     sessionSection
                 }
@@ -82,6 +85,31 @@ public struct SettingsView: View {
                 .tabItem { Label("版本信息", systemImage: "info.circle") }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(AppTheme.canvas(colorScheme))
+        .tint(AppTheme.blue)
+    }
+
+    private var appearanceThemeSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("界面外观", selection: $themeModeRaw) {
+                    ForEach(AppThemeMode.allCases) { mode in
+                        Label(mode.displayName, systemImage: mode.symbol).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("选择「跟随系统」会随 macOS 外观自动切换；侧边栏与所有页面始终使用同一套配色。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+        } label: {
+            Label("界面外观", systemImage: "circle.lefthalf.filled")
+                .font(.headline)
         }
     }
 

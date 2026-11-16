@@ -2,21 +2,27 @@ import SwiftUI
 
 public struct JumpHostListView: View {
     @ObservedObject var appVM: AppViewModel
+    @Environment(\.colorScheme) private var colorScheme
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Action bar
-            HStack {
-                Text("跳板机资产库")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                Spacer()
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("跳板机资产库")
+                        .font(.title2.weight(.bold))
+                    Text("统一管理可复用的 SSH 跳板节点")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
                 Button(action: { appVM.newJumpHost() }) {
                     Label("添加跳板机", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
             }
-            .padding()
+            .padding(.horizontal, 22)
+            .padding(.vertical, 16)
+            .background(HostShellPalette.canvas(colorScheme))
 
             Divider()
 
@@ -40,22 +46,34 @@ public struct JumpHostListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
                     ForEach(appVM.jumpHosts) { jh in
-                        HStack {
+                        HStack(spacing: 12) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(HostShellPalette.blue)
+                                .frame(width: 38, height: 38)
+                                .background(HostShellPalette.blue.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 9))
+
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(jh.name)
-                                    .font(.headline)
+                                    .font(.system(size: 14, weight: .semibold))
                                 Text("\(jh.username)@\(jh.hostname):\(jh.port)")
-                                    .font(.caption)
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
                             }
-                            Spacer()
+
+                            Spacer(minLength: 12)
+
                             if case .agent = jh.auth {
-                                Text("SSH Agent")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                assetBadge("SSH Agent", color: HostShellPalette.teal)
+                            } else {
+                                assetBadge("被 \(referenceCount(for: jh)) 台主机引用", color: .secondary)
                             }
+
                             Button {
                                 appVM.connect(to: jh)
                             } label: {
@@ -76,13 +94,33 @@ public struct JumpHostListView: View {
                             }
                             .controlSize(.small)
                         }
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 13)
+
+                        Divider().padding(.leading, 70)
                     }
+                    }
+                    .padding(.vertical, 4)
                 }
+                .background(Color(NSColor.underPageBackgroundColor))
             }
         }
         .sheet(isPresented: $appVM.isShowingJumpHostEditor) {
             JumpHostEditSheet(appVM: appVM, jumpHost: appVM.editingJumpHost)
         }
+    }
+
+    private func referenceCount(for jumpHost: JumpHost) -> Int {
+        appVM.hosts.filter { $0.jump_host_ids.contains(jumpHost.id) }.count
+    }
+
+    private func assetBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12))
+            .foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }

@@ -265,7 +265,71 @@ final class IOSConnectCancellation {
 @main
 struct HostShellIOSApp: App {
     @StateObject private var model = AppModel()
-    var body: some Scene { WindowGroup { HostListScreen().environmentObject(model) } }
+    @Environment(\.colorScheme) private var systemScheme
+    @AppStorage(AppTheme.modeKey) private var themeModeRaw = AppThemeMode.system.rawValue
+
+    private var scheme: ColorScheme {
+        AppTheme.effectiveScheme(mode: AppTheme.mode(rawValue: themeModeRaw), system: systemScheme)
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            RootThemeHost(scheme: scheme) {
+                HostListScreen().environmentObject(model)
+            }
+        }
+    }
+}
+
+/// Applies the resolved color scheme to the entire view tree so every screen
+/// (lists, forms, terminal chrome) renders from the same appearance.
+private struct RootThemeHost<Content: View>: View {
+    let scheme: ColorScheme
+    let content: Content
+
+    init(scheme: ColorScheme, @ViewBuilder content: () -> Content) {
+        self.scheme = scheme
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .environment(\.colorScheme, scheme)
+            .animation(.easeInOut(duration: 0.2), value: scheme)
+    }
+}
+
+private enum IOSDesign {
+    static let deep = AppTheme.deep
+    static let navy = AppTheme.navy
+    static let cyan = AppTheme.cyan
+    static let blue = AppTheme.blue
+
+    static func proxyColor(_ mode: ProxyMode) -> SwiftUI.Color {
+        AppTheme.proxyColor(mode)
+    }
+
+    /// Navigation bar background — dark in dark mode, tinted light in light mode.
+    static func navBar(_ scheme: ColorScheme) -> SwiftUI.Color {
+        scheme == .dark ? AppTheme.deep : AppTheme.canvas(scheme)
+    }
+}
+
+private enum MobileTab: String, CaseIterable, Identifiable {
+    case hosts = "主机"
+    case jumps = "跳板机"
+    case keys = "证书"
+    case settings = "设置"
+
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .hosts: return "server.rack"
+        case .jumps: return "arrow.triangle.branch"
+        case .keys: return "key.fill"
+        case .settings: return "gearshape"
+        }
+    }
 }
 
 struct HostListScreen: View {
@@ -275,6 +339,8 @@ struct HostListScreen: View {
     @State private var hostPendingDeletion: Host?
     @State private var sessionHost: Host?
     @State private var showingSessions = false
+    @State private var selectedTab: MobileTab = .hosts
+    @Environment(\.colorScheme) private var colorScheme
 
     private var filteredHosts: [Host] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -333,26 +399,44 @@ struct HostListScreen: View {
                     ForEach(filteredHosts) { host in
                         HStack(spacing: 12) {
                             Button { sessionHost = host; showingSessions = true } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "terminal.fill")
-                                        .font(.system(size: 18, weight: .semibold))
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 44, height: 44)
-                                        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(host.name).font(.headline).lineLimit(1)
-                                        Text("\(host.username)@\(host.hostname):\(host.port)")
-                                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                                        HStack(spacing: 6) {
-                                            Text(host.proxy_mode.badgeName)
-                                            if let forwards = host.port_forwards, !forwards.isEmpty {
-                                                Text("· \(forwards.count) 隧道")
-                                            }
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack(spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(host.name).font(.headline).lineLimit(1)
+                                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                                                .font(.system(.caption, design: .monospaced))
+                                                .foregroundStyle(.secondary).lineLimit(1)
                                         }
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        Spacer(minLength: 2)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
                                     }
+                                    HStack(spacing: 6) {
+                                        hostBadge(host.proxy_mode.badgeName, color: IOSDesign.proxyColor(host.proxy_mode))
+                                        if host.proxy_mode == .proxyJump && !host.jump_host_ids.isEmpty {
+                                            hostBadge("\(host.jump_host_ids.count) 跳", color: IOSDesign.blue)
+                                        }
+                                        if let forwards = host.port_forwards, !forwards.isEmpty {
+                                            hostBadge("\(forwards.count) 隧道", color: .cyan)
+                                        }
+                                        ForEach(host.tags.prefix(2), id: \.self) { tag in
+                                            hostBadge("#\(tag)", color: .secondary)
+                                        }
+                                    }
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "terminal")
+                                        Text("连接终端")
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(IOSDesign.blue.gradient, in: RoundedRectangle(cornerRadius: 8))
                                 }
-                                .padding(.vertical, 5)
+                                .padding(13)
+                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 13))
+                                .overlay(RoundedRectangle(cornerRadius: 13).stroke(IOSDesign.blue.opacity(0.16), lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                             Button { activeSheet = .editHost(host) } label: {
@@ -364,6 +448,9 @@ struct HostListScreen: View {
                             Button(role: .destructive) { hostPendingDeletion = host } label: { Label("删除", systemImage: "trash") }
                             Button { activeSheet = .editHost(host) } label: { Label("编辑", systemImage: "pencil") }.tint(.blue)
                         }
+                        .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 } header: {
                     HStack {
@@ -374,10 +461,16 @@ struct HostListScreen: View {
                 }
             }
             .navigationTitle("主机")
+            .toolbarBackground(IOSDesign.navBar(colorScheme), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .navigationDestination(isPresented: $showingSessions) {
                 if let sessionHost { SessionWorkspace(initialHost: sessionHost) }
             }
             .searchable(text: $searchText, prompt: "搜索名称、地址、用户或标签")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                mobileTabBar
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
@@ -405,7 +498,7 @@ struct HostListScreen: View {
             } message: { host in
                 Text("确定删除主机“\(host.name)”？此操作无法撤销。")
             }
-            .sheet(item: $activeSheet) { sheet in
+            .sheet(item: $activeSheet, onDismiss: { selectedTab = .hosts }) { sheet in
                 switch sheet {
                 case .newHost: HostEditor(host: Host(), isNew: true, onSave: model.save)
                 case .editHost(let host): HostEditor(host: host, onSave: model.save)
@@ -421,6 +514,46 @@ struct HostListScreen: View {
                 Button("好", role: .cancel) { model.error = nil }
             } message: { Text(model.error ?? "") }
         }
+    }
+
+    private var mobileTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(MobileTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                    switch tab {
+                    case .hosts: break
+                    case .jumps: activeSheet = .jumps
+                    case .keys: activeSheet = .keys
+                    case .settings: activeSheet = .settings
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.icon).font(.system(size: 16, weight: .medium))
+                        Text(tab.rawValue).font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(selectedTab == tab ? IOSDesign.blue : Color(uiColor: .secondaryLabel))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5) }
+    }
+
+    private func hostBadge(_ title: String, color: SwiftUI.Color) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .foregroundStyle(color)
     }
 }
 
@@ -441,6 +574,7 @@ private enum HostListSheet: Identifiable {
 }
 
 struct HostEditor: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
     @State var host: Host
@@ -504,8 +638,29 @@ struct HostEditor: View {
                     }
                 }
                 Section("连接方式") {
-                    Picker("代理模式", selection: $host.proxy_mode) {
-                        ForEach(ProxyMode.allCases) { mode in Text(mode.displayName).tag(mode) }
+                    VStack(spacing: 8) {
+                        ForEach(ProxyMode.allCases) { mode in
+                            Button { host.proxy_mode = mode } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: proxySymbol(for: mode))
+                                        .foregroundStyle(IOSDesign.proxyColor(mode))
+                                        .frame(width: 30, height: 30)
+                                        .background(IOSDesign.proxyColor(mode).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(mode.displayName).font(.subheadline.weight(.semibold))
+                                        Text(proxyDescription(for: mode)).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: host.proxy_mode == mode ? "largecircle.fill.circle" : "circle")
+                                        .foregroundStyle(host.proxy_mode == mode ? IOSDesign.blue : Color.secondary.opacity(0.5))
+                                }
+                                .padding(9)
+                                .contentShape(Rectangle())
+                                .background(host.proxy_mode == mode ? IOSDesign.blue.opacity(0.07) : Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(host.proxy_mode == mode ? IOSDesign.blue.opacity(0.5) : Color.primary.opacity(0.06), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     if host.proxy_mode == .proxyJump {
                         Picker("跳板机", selection: $selectedJumpID) {
@@ -594,7 +749,11 @@ struct HostEditor: View {
                     }
                 }
             }
+            .tint(IOSDesign.blue)
             .navigationTitle(isNew ? "添加主机" : "编辑主机")
+            .toolbarBackground(IOSDesign.navBar(colorScheme), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -655,6 +814,24 @@ struct HostEditor: View {
                 if !forwardCertificateIds.contains(id) { forwardCertificateIds.append(id) }
             } else { forwardCertificateIds.removeAll { $0 == id } }
         })
+    }
+
+    private func proxySymbol(for mode: ProxyMode) -> String {
+        switch mode {
+        case .direct: return "link"
+        case .proxyJump: return "arrow.triangle.branch"
+        case .cloudflareAccess: return "shield.checkerboard"
+        case .proxyCommand: return "terminal"
+        }
+    }
+
+    private func proxyDescription(for mode: ProxyMode) -> String {
+        switch mode {
+        case .direct: return "标准 TCP 直连目标主机"
+        case .proxyJump: return "经由跳板节点转发 SSH 流量"
+        case .cloudflareAccess: return "通过 Cloudflare Access 建立安全通道"
+        case .proxyCommand: return "使用本地命令建立自定义连接"
+        }
     }
 
     private var bindEndpointTitle: String {
@@ -1355,7 +1532,7 @@ private struct SessionWorkspace: View {
                 }
                 .padding(.horizontal, 8)
             }
-            .background(.bar)
+            .background(IOSDesign.deep)
             ZStack {
                 ForEach(tabs) { tab in
                     HostSessionScreen(host: tab.connectionHost, usesExistingForwards: tab.usesExistingForwards)
@@ -1408,6 +1585,7 @@ struct HostSessionScreen: View {
     @StateObject private var networkMonitor = NetworkStatusMonitor()
     @State private var stage = "正在连接…"
     @State private var stageDetails = "正在连接…"
+    @State private var stageHistory: [String] = []
     @State private var connected = false
     @State private var connecting = true
     @State private var connectionAttempt = 0
@@ -1436,13 +1614,21 @@ struct HostSessionScreen: View {
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.bar)
             }
+            if !connected {
+                connectionProgressView
+            } else {
+            VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Button { showingStageDetails = true } label: {
                     HStack(spacing: 7) {
                         Circle().fill(connected ? .green : (connecting ? .orange : .red))
                             .frame(width: 7, height: 7)
-                        Text(connectionNotice ?? stage)
-                            .font(.caption).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(host.name).font(.caption.weight(.semibold)).lineLimit(1)
+                            Text(connectionNotice ?? "\(host.username)@\(host.hostname):\(host.port)")
+                                .font(.system(size: 10, design: .monospaced)).lineLimit(1)
+                        }
+                        .foregroundStyle(.white)
                     }
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
@@ -1479,7 +1665,7 @@ struct HostSessionScreen: View {
                 }
             }
             .padding(.horizontal, 12)
-            .background(.bar)
+            .background(IOSDesign.deep)
             IOSSwiftTerm(
                 session: terminal,
                 preferences: terminalPreferences,
@@ -1496,7 +1682,9 @@ struct HostSessionScreen: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }
-            .background(.bar)
+            .background(IOSDesign.deep)
+            }
+            }
         }
         .sheet(isPresented: $showingStageDetails) {
             NavigationStack {
@@ -1541,7 +1729,8 @@ struct HostSessionScreen: View {
                             let message = details["message"]?.value as? String
                             let suggestion = details["suggestion"]?.value as? String
                             stage = [event.stage.status, message, suggestion].compactMap { $0 }.joined(separator: "\n")
-                            stageDetails = stage + "\n\n" + json
+                            if stageHistory.last != stage { stageHistory.append(stage) }
+                            stageDetails = stageHistory.joined(separator: "\n") + "\n\n" + json
                             connected = event.stage.status == "connected"
                             connecting = !["connected", "disconnected", "failed"].contains(event.stage.status)
                         } else {
@@ -1628,7 +1817,114 @@ struct HostSessionScreen: View {
         connectionNotice = nil
         stage = "正在重连…"
         stageDetails = stage
+        stageHistory = []
         connectionAttempt += 1
+    }
+
+    private var connectionProgressView: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 14).fill((connecting ? IOSDesign.blue : .red).opacity(0.12))
+                            if connecting { ProgressView().tint(IOSDesign.blue) }
+                            else { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 22)) }
+                        }
+                        .frame(width: 52, height: 52)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(connecting ? "正在连接" : "连接失败")
+                                .font(.title3.weight(.bold))
+                            Text(host.name).font(.subheadline).foregroundStyle(.secondary)
+                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 7) {
+                        Image(systemName: "arrow.triangle.branch")
+                        Text(host.proxy_mode.displayName)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(IOSDesign.proxyColor(host.proxy_mode))
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(IOSDesign.proxyColor(host.proxy_mode).opacity(0.10), in: Capsule())
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        if stageHistory.isEmpty {
+                            stageRow("正在建立连接…", current: true, last: true)
+                        } else {
+                            ForEach(Array(stageHistory.enumerated()), id: \.offset) { index, item in
+                                let isLast = index == stageHistory.count - 1
+                                stageRow(
+                                    item,
+                                    current: connecting && isLast,
+                                    failed: !connecting && isLast && (stage.localizedCaseInsensitiveContains("failed") || stage.contains("失败")),
+                                    last: isLast
+                                )
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 13))
+
+                    if !connecting, let connectionNotice {
+                        Label(connectionNotice, systemImage: "wifi.exclamationmark")
+                            .font(.footnote).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+                .padding(18)
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 12) {
+                Button { showingStageDetails = true } label: {
+                    Label("复制详情", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                if connecting {
+                    Button("取消连接", role: .destructive) {
+                        terminal.cancelConnect()
+                        terminal.cancelPendingAuthPrompt()
+                        terminal.session?.close()
+                        terminal.session = nil
+                        connecting = false
+                        stage = "连接已取消"
+                        stageHistory.append(stage)
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("重试连接", action: reconnect)
+                        .buttonStyle(.borderedProminent)
+                        .tint(IOSDesign.blue)
+                }
+            }
+            .padding(14)
+            .background(.bar)
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+
+    private func stageRow(_ title: String, current: Bool, failed: Bool = false, last: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(spacing: 0) {
+                ZStack {
+                    Circle().fill(current ? IOSDesign.blue : (failed ? Color.red : Color.green)).frame(width: 19, height: 19)
+                    if current { ProgressView().scaleEffect(0.6).tint(.white) }
+                    else { Image(systemName: failed ? "xmark" : "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white) }
+                }
+                if !last { Rectangle().fill(Color.secondary.opacity(0.18)).frame(width: 2, height: 28) }
+            }
+            Text(title)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(current ? .primary : .secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(.top, 2)
+        }
     }
 
     private func terminalKeyButton(_ title: String, bytes: [UInt8]) -> some View {
@@ -1637,8 +1933,9 @@ struct HostSessionScreen: View {
         } label: {
             Text(title)
                 .font(.system(.caption, design: .monospaced))
-                .frame(minWidth: 44, minHeight: 44)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(IOSDesign.cyan)
+                .frame(minWidth: 44, minHeight: 40)
+                .background(IOSDesign.navy, in: RoundedRectangle(cornerRadius: 7))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1669,6 +1966,7 @@ struct HostSessionScreen: View {
 }
 
 private struct IOSTerminalSettingsSheet: View {
+    @AppStorage(AppTheme.modeKey) private var themeModeRaw = AppThemeMode.system.rawValue
     @AppStorage(TerminalPreferences.fontSizeKey) private var terminalFontSize = TerminalPreferences.defaultFontSize
     @AppStorage(TerminalPreferences.fontFamilyKey) private var terminalFontFamily = TerminalFontFamily.system.rawValue
     @AppStorage(TerminalPreferences.themeKey) private var terminalTheme = TerminalTheme.dark.rawValue
@@ -1688,6 +1986,18 @@ private struct IOSTerminalSettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("界面外观") {
+                    Picker("显示模式", selection: $themeModeRaw) {
+                        ForEach(AppThemeMode.allCases) { mode in
+                            Label(mode.displayName, systemImage: mode.symbol).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("跟随系统会随 iOS 外观自动切换；所有页面使用同一套配色。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("终端外观") {
                     HStack {
                         Text("字体大小")

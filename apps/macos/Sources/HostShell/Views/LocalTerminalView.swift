@@ -4,28 +4,121 @@ import Darwin
 import SwiftTerm
 
 struct LocalTerminalHomeView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "terminal")
-                .font(.system(size: 42, weight: .regular))
-                .foregroundStyle(.secondary)
-            Text("本地终端")
-                .font(.title2.weight(.semibold))
-            Text("直接在这台 Mac 上启动登录 Shell。无需选择 SSH 主机或连接网络。")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 480)
-            Button {
-                LocalTerminalWindowManager.shared.open()
-            } label: {
-                Label("打开本地终端", systemImage: "plus")
+        ScrollView {
+            VStack(spacing: 22) {
+                // Brand hero
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 14) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(HostShellPalette.cyan)
+                            .frame(width: 58, height: 58)
+                            .background(
+                                LinearGradient(
+                                    colors: [HostShellPalette.navy, HostShellPalette.deep],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("本地终端")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundStyle(.white)
+                            Text("LOCAL SHELL")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(HostShellPalette.cyan)
+                        }
+                        Spacer()
+                    }
+
+                    Text("直接在这台 Mac 上启动登录 Shell，无需 SSH 连接或网络。共享 HostShell 的等宽字体、配色与终端仿真设置。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(HostShellPalette.n300)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button {
+                        LocalTerminalWindowManager.shared.open()
+                    } label: {
+                        Label("打开本地终端", systemImage: "terminal")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(HostShellPalette.blue)
+                }
+                .padding(24)
+                .background(
+                    LinearGradient(
+                        colors: [HostShellPalette.navy2, HostShellPalette.deep],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(HostShellPalette.cyan.opacity(0.18), lineWidth: 1)
+                )
+
+                // Feature notes
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(HostShellPalette.blue)
+                        Text("终端特性")
+                            .font(.system(size: 13, weight: .bold))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(HostShellPalette.canvas(colorScheme))
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        featureRow(icon: "textformat", color: HostShellPalette.cyan,
+                                   title: "等宽字体与主题", detail: "字体、字号、深色/浅色主题与终端会话统一")
+                        featureRow(icon: "rectangle.on.rectangle", color: HostShellPalette.blue,
+                                   title: "完整终端仿真", detail: "xterm-256color，vim / tmux / htop 可用")
+                        featureRow(icon: "app.badge", color: HostShellPalette.modeDirect,
+                                   title: "独立标签窗口", detail: "在独立窗口运行，可与 SSH 会话并排使用")
+                    }
+                    .padding(16)
+                }
+                .background(HostShellPalette.panel(colorScheme))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+
+                Spacer(minLength: 20)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .padding(26)
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(HostShellPalette.workspace(colorScheme))
+    }
+
+    private func featureRow(icon: String, color: SwiftUI.Color, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundStyle(color)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+        }
     }
 }
 
@@ -89,13 +182,18 @@ private struct LocalTerminalWindowContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
                 Circle()
-                    .fill(processStatus == "本地 Shell 正在运行" ? Color.green : Color.secondary)
+                    .fill(processStatus == "本地 Shell 正在运行" ? HostShellPalette.modeDirect : Color.secondary)
                     .frame(width: 8, height: 8)
+                Text("本地终端")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("·")
+                    .foregroundStyle(.white.opacity(0.4))
                 Text(processStatus)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
                 Spacer()
                 Button("新建终端") {
                     LocalTerminalWindowManager.shared.open()
@@ -103,10 +201,11 @@ private struct LocalTerminalWindowContent: View {
                 .controlSize(.small)
                 Button("关闭") { onClose() }
                     .controlSize(.small)
+                    .tint(.red)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.windowBackgroundColor))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(HostShellPalette.deep)
 
             Divider()
 

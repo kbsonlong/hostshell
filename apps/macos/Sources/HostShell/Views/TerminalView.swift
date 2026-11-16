@@ -188,23 +188,26 @@ public struct TerminalView: View {
         HSplitView {
           VStack(spacing: 0) {
             // Header Bar
-            HStack {
+            HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Circle()
                         .fill(sessionVM.isConnected ? Color.green : (sessionVM.isConnecting ? Color.yellow : Color.red))
-                        .frame(width: 10, height: 10)
-                    Text(sessionVM.host.name)
-                        .font(.headline)
-                    Text("(\(sessionVM.host.username)@\(sessionVM.host.hostname):\(sessionVM.host.port))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sessionVM.host.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("\(sessionVM.host.username)@\(sessionVM.host.hostname):\(sessionVM.host.port)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.58))
+                    }
                     Text(sessionVM.host.proxy_mode.badgeName)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.12))
-                        .foregroundColor(.blue)
-                        .cornerRadius(4)
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(HostShellPalette.proxyColor(sessionVM.host.proxy_mode).opacity(0.18))
+                        .foregroundColor(HostShellPalette.proxyColor(sessionVM.host.proxy_mode))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
 
                 Spacer()
@@ -228,15 +231,16 @@ public struct TerminalView: View {
                     .controlSize(.small)
                 }
 
-                Button("断开并退出") {
+                Button("断开") {
                     sessionVM.disconnect()
                     onClose()
                 }
                 .controlSize(.small)
+                .tint(.red)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.windowBackgroundColor))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(HostShellPalette.deep)
 
             Divider()
 
@@ -250,6 +254,8 @@ public struct TerminalView: View {
                 }
             )
                 .ignoresSafeArea(edges: .bottom)
+
+            terminalAccessoryBar
           }
           if showingAIAssistant {
               VStack(spacing: 0) {
@@ -272,6 +278,51 @@ public struct TerminalView: View {
               .frame(minWidth: 380, idealWidth: 440, minHeight: 500)
           }
         }
+    }
+
+    private var terminalAccessoryBar: some View {
+        HStack(spacing: 6) {
+            terminalKey("ESC", action: { sessionVM.sendSpecialKey("ESC") })
+            terminalKey("TAB", action: { sessionVM.sendSpecialKey("TAB") })
+            keyDivider
+            terminalKey("Ctrl+C", destructive: true, action: { sessionVM.sendSpecialKey("CTRL_C") })
+            terminalKey("Ctrl+D", destructive: true, action: { sessionVM.sendSpecialKey("CTRL_D") })
+            terminalKey("Ctrl+Z", destructive: true, action: { sessionVM.sendSpecialKey("CTRL_Z") })
+            keyDivider
+            terminalKey("|", action: { sessionVM.sendInput("|") })
+            terminalKey("~", action: { sessionVM.sendInput("~") })
+            terminalKey("/", action: { sessionVM.sendInput("/") })
+            terminalKey("-", action: { sessionVM.sendInput("-") })
+            keyDivider
+            terminalKey("↑", action: { sessionVM.sendSpecialKey("UP") })
+            terminalKey("↓", action: { sessionVM.sendSpecialKey("DOWN") })
+            terminalKey("←", action: { sessionVM.sendSpecialKey("LEFT") })
+            terminalKey("→", action: { sessionVM.sendSpecialKey("RIGHT") })
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(HostShellPalette.deep)
+    }
+
+    private var keyDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.14))
+            .frame(width: 1, height: 18)
+            .padding(.horizontal, 3)
+    }
+
+    private func terminalKey(_ title: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: title.count == 1 ? 12 : 10, weight: .medium, design: .monospaced))
+                .foregroundColor(destructive ? Color(red: 1, green: 0.47, blue: 0.47) : Color.white.opacity(0.84))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
     }
 
     private var terminalPreferences: TerminalPreferences {
