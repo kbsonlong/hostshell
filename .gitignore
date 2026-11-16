@@ -3,7 +3,11 @@
 .DS_Store
 apps/ios/.build
 apps/ios/Frameworks/HostShellCore.xcframework/
+apps/ios/.swiftpm/
+apps/macos/.swiftpm/
+/.workbuddy-ai/
 
 # Xcode user state
 *.xcuserstate
 xcuserdata/
+.ua
