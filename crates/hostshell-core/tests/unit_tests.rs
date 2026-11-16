@@ -150,6 +150,62 @@ fn import_proxyjump_chain_keeps_order_and_rejects_partial_resolution() {
     assert!(incomplete.warnings.iter().any(|warning| warning.contains("missing")));
 }
 
+#[test]
+fn import_flattens_saved_proxyjump_host_chain() {
+    let jump = JumpHost {
+        id: "saved-jump".into(),
+        name: "jump".into(),
+        hostname: "jump.example.test".into(),
+        port: 32200,
+        username: "ops".into(),
+        auth: AuthMethod::Agent,
+    };
+    let mut pci_test = parse_ssh_config(
+        "Host pci-test\n HostName 18.167.251.101\n User ec2-user\n",
+    )
+    .hosts
+    .remove(0);
+    pci_test.proxy_mode = ProxyMode::ProxyJump;
+    pci_test.jump_host_ids = vec![jump.id.clone()];
+
+    let result = hostshell_core::storage::importer::parse_ssh_config_with_existing(
+        "Host pci-test-vpn\n HostName 10.48.20.252\n User ec2-user\n ProxyJump pci-test\n",
+        &[pci_test],
+        &[jump.clone()],
+    );
+    let target = result.hosts.iter().find(|host| host.name == "pci-test-vpn").unwrap();
+    assert_eq!(target.jump_host_ids.len(), 2);
+    assert_eq!(target.jump_host_ids[0], jump.id);
+    let generated = result
+        .jump_hosts
+        .iter()
+        .find(|jump_host| jump_host.name == "pci-test")
+        .unwrap();
+    assert_eq!(target.jump_host_ids[1], generated.id);
+    assert_eq!(generated.hostname, "18.167.251.101");
+    assert!(result.warnings.is_empty());
+}
+
+#[test]
+fn import_flattens_proxyjump_hosts_from_same_config_and_rejects_cycles() {
+    let result = parse_ssh_config(
+        "Host jump\n HostName jump.test\nHost pci-test\n HostName pci.test\n ProxyJump jump\nHost target\n HostName target.test\n ProxyJump pci-test\n",
+    );
+    let target = result.hosts.iter().find(|host| host.name == "target").unwrap();
+    let hops: Vec<_> = target
+        .jump_host_ids
+        .iter()
+        .map(|id| result.jump_hosts.iter().find(|jump| &jump.id == id).unwrap().name.as_str())
+        .collect();
+    assert_eq!(hops, vec!["jump", "pci-test"]);
+
+    let cyclic = parse_ssh_config(
+        "Host a\n HostName a.test\n ProxyJump b\nHost b\n HostName b.test\n ProxyJump a\n",
+    );
+    assert!(cyclic.hosts.iter().all(|host| host.jump_host_ids.is_empty()));
+    assert!(cyclic.warnings.iter().any(|warning| warning.contains("cyclic ProxyJump")));
+}
+
 #[tokio::test]
 async fn proxyjump_rejects_missing_or_reordered_hops_before_connecting() {
     let result = parse_ssh_config("Host first\n HostName first.test\nHost second\n HostName second.test\nHost target\n ProxyJump first,second\n");
