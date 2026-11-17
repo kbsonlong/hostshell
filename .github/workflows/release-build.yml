@@ -2,6 +2,11 @@ name: Manual Release Build
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.1.0). Leave empty to build artifacts only."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -74,6 +79,19 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent target/HostShell.app "dist/HostShell-macos-${RELEASE_ARCH}.zip"
+
+          # Drag-and-drop DMG
+          dmg_dir="$RUNNER_TEMP/dmg-staging"
+          rm -rf "$dmg_dir"
+          mkdir -p "$dmg_dir"
+          ditto target/HostShell.app "$dmg_dir/HostShell.app"
+          ln -s /Applications "$dmg_dir/Applications"
+          rm -f "dist/HostShell-macos-${RELEASE_ARCH}.dmg"
+          hdiutil create -volname "HostShell" \
+            -srcfolder "$dmg_dir" \
+            -ov -format UDZO \
+            "dist/HostShell-macos-${RELEASE_ARCH}.dmg"
+
           tar -C target/release -czf "dist/hostshell-cli-macos-${RELEASE_ARCH}.tar.gz" hostshell-cli
           printf 'commit=%s\nrun=%s\narchitecture=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_NUMBER" "$RELEASE_ARCH" > dist/BUILD-INFO.txt
           (cd dist && shasum -a 256 ./* > SHA256SUMS)
@@ -85,7 +103,7 @@ jobs:
           retention-days: 14
 
   ios:
-    name: iOS unsigned Release archive
+    name: iOS unsigned IPA
     needs: regression
     runs-on: macos-15
     timeout-minutes: 90
@@ -103,11 +121,50 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/HostShellIOS.xcarchive" \
             -skipPackagePluginValidation archive CODE_SIGNING_ALLOWED=NO
+      - name: Export unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_dir="$RUNNER_TEMP/ios-export"
+          rm -rf "$export_dir"
+          mkdir -p "$export_dir"
+          cat > "$export_dir/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>debugging</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>stripSwiftSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+          # Export without signing: strip embedded provisioning requirements so the
+          # IPA can be re-signed later by Sideloadly / AltStore / Sideloop / Xcode.
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/HostShellIOS.xcarchive" \
+            -exportPath "$export_dir" \
+            -exportOptionsPlist "$export_dir/ExportOptions.plist" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO || true
+          ipa="$(find "$export_dir" -maxdepth 1 -type f -name '*.ipa' -print -quit || true)"
+          if [ -z "$ipa" ]; then
+            echo "xcodebuild export produced no IPA; packaging unsigned .app into IPA manually"
+            mkdir -p "$RUNNER_TEMP/ipa-payload/Payload"
+            ditto "$RUNNER_TEMP/HostShellIOS.xcarchive/Products/Applications/HostShellIOS.app" \
+              "$RUNNER_TEMP/ipa-payload/Payload/HostShellIOS.app"
+            ipa="$RUNNER_TEMP/HostShellIOS-unsigned.ipa"
+            rm -f "$ipa"
+            (cd "$RUNNER_TEMP/ipa-payload" && zip -qry "$ipa" Payload)
+          fi
+          mkdir -p dist
+          cp "$ipa" dist/HostShellIOS-unsigned.ipa
       - name: Package archive
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/HostShellIOS.xcarchive" dist/HostShellIOS-unsigned.xcarchive.zip
           printf 'commit=%s\nrun=%s\nsigning=unsigned\n' "$GITHUB_SHA" "$GITHUB_RUN_NUMBER" > dist/BUILD-INFO.txt
           (cd dist && shasum -a 256 ./* > SHA256SUMS)
@@ -117,3 +174,111 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [macos, ios]
+    if: ${{ inputs.version != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Normalize version tag
+        shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${RAW_VERSION#v}"
+          if [ -z "$version" ]; then
+            echo "Version input is empty; publish skipped" >&2
+            exit 1
+          fi
+          echo "VERSION=v${version}" >> "$GITHUB_ENV"
+      - name: Download macOS arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hostshell-macos-arm64-${{ github.sha }}
+          path: dist/arm64
+      - name: Download macOS amd64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hostshell-macos-amd64-${{ github.sha }}
+          path: dist/amd64
+      - name: Download iOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hostshell-ios-unsigned-${{ github.sha }}
+          path: dist/ios
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          cp dist/arm64/* release-files/
+          cp dist/amd64/* release-files/
+          cp dist/ios/* release-files/
+          # Keep one merged BUILD-INFO and one merged SHA256SUMS
+          grep -h '' dist/arm64/BUILD-INFO.txt dist/amd64/BUILD-INFO.txt dist/ios/BUILD-INFO.txt \
+            | sort -u > release-files/BUILD-INFO.txt
+          rm -f release-files/SHA256SUMS
+          (cd release-files && shasum -a 256 \
+            HostShell-macos-arm64.dmg \
+            HostShell-macos-amd64.dmg \
+            HostShell-macos-arm64.zip \
+            HostShell-macos-amd64.zip \
+            hostshell-cli-macos-arm64.tar.gz \
+            hostshell-cli-macos-amd64.tar.gz \
+            HostShellIOS-unsigned.ipa \
+            HostShellIOS-unsigned.xcarchive.zip \
+            > SHA256SUMS)
+          cat release-files/SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: |
+            ## HostShell
+
+            凌晨 3 点的告警，不用再爬起来开电脑。手机直连 · 跳板机多跳 · Cloudflare 零信任。
+
+            ### 下载
+
+            | 平台 | 文件 | 说明 |
+            | --- | --- | --- |
+            | macOS (Apple Silicon) | `HostShell-macos-arm64.dmg` | 打开拖入 Applications 即可 |
+            | macOS (Intel) | `HostShell-macos-amd64.dmg` | 打开拖入 Applications 即可 |
+            | iOS | `HostShellIOS-unsigned.ipa` | 未签名，需自行侧载（Sideloadly / AltStore / Sideloop / Xcode） |
+            | CLI (Apple Silicon) | `hostshell-cli-macos-arm64.tar.gz` | 解压后放入 PATH |
+            | CLI (Intel) | `hostshell-cli-macos-amd64.tar.gz` | 解压后放入 PATH |
+
+            ### 校验
+
+            所有文件 SHA256 见 `SHA256SUMS`。macOS 产物未签名公证，首次打开需右键 > 打开，
+            或在「系统设置 > 隐私与安全性」中允许。iOS archive 完整包见 `HostShellIOS-unsigned.xcarchive.zip`。
+
+            ### 环境要求
+
+            macOS 13+ · iOS 16+ · 完整文档见仓库 README。
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r f; do
+            [ -n "$f" ] && [ -f "release-files/$f" ] && args+=("release-files/$f")
+          done <<'FILES'
+          SHA256SUMS
+          BUILD-INFO.txt
+          HostShell-macos-arm64.dmg
+          HostShell-macos-amd64.dmg
+          HostShell-macos-arm64.zip
+          HostShell-macos-amd64.zip
+          hostshell-cli-macos-arm64.tar.gz
+          hostshell-cli-macos-amd64.tar.gz
+          HostShellIOS-unsigned.ipa
+          HostShellIOS-unsigned.xcarchive.zip
+          FILES
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "HostShell ${VERSION}" \
+            --notes "$NOTES" \
+            "${args[@]}"

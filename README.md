@@ -131,7 +131,7 @@ cargo test -p hostshell-core
 
 主机密钥信任记录可通过 `hostshell-cli list-known-hosts` 查看，`forget-known-host <主机名> <端口>` 删除前请先核对指纹。
 
-Release 前远端验证：GitHub Actions → **Manual Release Build** 手动触发；产物保留在 Artifacts 14 天，不创建 Release。macOS 产物未签名公证，iOS archive 未签名，正式分发需自行配置 Apple 签名。
+Release（IPA + macOS DMG）：GitHub Actions → **Manual Release Build** → 在 `version` 中填版本号（如 `v0.1.0`）触发。回归通过后自动产出双架构 DMG / .app zip / CLI tar 包 / 未签名 IPA，并创建带 SHA256SUMS 的 GitHub Release。仅留空 `version` 则只构建 Artifacts（保留 14 天）不发布。macOS 产物未签名公证，iOS IPA 未签名（供 Sideloadly / AltStore / Sideloop / Xcode 侧载重签），正式分发需自行配置 Apple 签名。
 
 </details>
 
