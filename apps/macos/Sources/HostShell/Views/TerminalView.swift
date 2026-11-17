@@ -245,15 +245,27 @@ public struct TerminalView: View {
             Divider()
 
             // Real terminal emulation: xterm sequences, 256 color, vim/tmux ready
-            SwiftTermRepresentable(
-                sessionVM: sessionVM,
-                preferences: terminalPreferences,
-                onSelectedTextForAI: { text in
-                    selectedTextForAI = text
-                    showingAIAssistant = true
-                }
-            )
+            ZStack(alignment: .bottomLeading) {
+                SwiftTermRepresentable(
+                    sessionVM: sessionVM,
+                    preferences: terminalPreferences,
+                    onSelectedTextForAI: { text in
+                        selectedTextForAI = text
+                        showingAIAssistant = true
+                    }
+                )
                 .ignoresSafeArea(edges: .bottom)
+
+                if let completion = sessionVM.completionEvent,
+                   !completion.candidates.isEmpty {
+                    ShellCompletionMenu(
+                        candidates: completion.candidates,
+                        onSelect: { sessionVM.acceptCompletion($0) },
+                        onDismiss: { sessionVM.dismissCompletion() }
+                    )
+                    .padding(12)
+                }
+            }
 
             terminalAccessoryBar
           }

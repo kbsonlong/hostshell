@@ -36,9 +36,11 @@ printf 'Host existing-jump-target\n HostName target.example.test\n ProxyJump jum
 HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli import "$SCRATCH/existing-jump.config" >/dev/null
 HOME="$SCRATCH/home" XDG_CONFIG_HOME="$SCRATCH/xdg" ./target/release/hostshell-cli list | grep -E 'existing-jump-target .*jump\([^)]+' >/dev/null || fail "import did not resolve an existing jump host"
 
-step "macOS Swift wire-model contract"
+step "macOS Swift wire-model contracts"
 swiftc "$ROOT/apps/macos/Sources/HostShell/Core/Models.swift" "$ROOT/apps/macos/Sources/HostShell/Core/AIProvider.swift" "$ROOT/apps/macos/Tests/ModelContractCheck.swift" -framework Security -o "$SCRATCH/macos-model-check"
 "$SCRATCH/macos-model-check"
+swiftc "$ROOT/apps/macos/Sources/HostShell/Completion/ShellCompletionModels.swift" "$ROOT/apps/macos/Tests/ShellCompletionContractCheck.swift" -o "$SCRATCH/macos-completion-check"
+"$SCRATCH/macos-completion-check"
 swiftc "$ROOT/apps/ios/Sources/HostShellIOS/Models.swift" "$ROOT/apps/ios/Sources/HostShellIOS/AIProvider.swift" "$ROOT/apps/ios/Tests/ModelContractCheck.swift" -framework Security -o "$SCRATCH/ios-model-check"
 "$SCRATCH/ios-model-check"
 

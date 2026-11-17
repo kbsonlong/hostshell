@@ -3,6 +3,18 @@ import AppKit
 import Darwin
 import SwiftTerm
 
+/// Keeps HostShell completion control sequences out of the local terminal emulator.
+/// The local PTY still receives all ordinary output and all native key input.
+private final class HostShellLocalTerminalView: LocalProcessTerminalView {
+    private var completionParser = ShellCompletionStreamParser()
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        let parsed = completionParser.consume(Array(slice))
+        guard !parsed.visibleBytes.isEmpty else { return }
+        feed(byteArray: parsed.visibleBytes[...])
+    }
+}
+
 struct LocalTerminalHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -240,7 +252,7 @@ private struct LocalSwiftTermRepresentable: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let terminal = LocalProcessTerminalView(
+        let terminal = HostShellLocalTerminalView(
             frame: CGRect(x: 0, y: 0, width: 700, height: 460),
             font: terminalFont,
             options: TerminalOptions(

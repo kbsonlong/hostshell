@@ -78,8 +78,10 @@ public final class SessionViewModel: ObservableObject {
     /// Raw byte chunks pending for the terminal emulator (SwiftTerm drains this).
     private var pendingOutput = Data()
     private var recentOutput = Data()
+    private var completionParser = ShellCompletionStreamParser()
     /// Bumped on every output chunk so SwiftUI re-renders and drains the buffer.
     @Published public var outputRevision: Int = 0
+    @Published public var completionEvent: ShellCompletionEvent?
 
     public var recentTerminalOutputText: String {
         String(decoding: recentOutput, as: UTF8.self)
@@ -105,6 +107,8 @@ public final class SessionViewModel: ObservableObject {
         failureInfo = nil
         stages.removeAll()
         pendingOutput.removeAll()
+        completionEvent = nil
+        completionParser = ShellCompletionStreamParser()
         let attemptID = connectionID
 
         let targetHost = self.host
@@ -229,6 +233,16 @@ public final class SessionViewModel: ObservableObject {
         }
     }
 
+    public func acceptCompletion(_ candidate: ShellCompletionCandidate) {
+        guard completionEvent != nil else { return }
+        sendInput(candidate.value)
+        completionEvent = nil
+    }
+
+    public func dismissCompletion() {
+        completionEvent = nil
+    }
+
     public func resize(cols: UInt32, rows: UInt32) {
         terminalSize = (cols, rows)
         sessionBridge?.resize(cols: cols, rows: rows)
@@ -241,6 +255,7 @@ public final class SessionViewModel: ObservableObject {
         authPromptWaiter?.complete(nil)
         authPromptWaiter = nil
         authPromptInfo = nil
+        completionEvent = nil
         sessionBridge?.close()
         sessionBridge = nil
         isConnecting = false
@@ -258,10 +273,16 @@ public final class SessionViewModel: ObservableObject {
     }
 
     private func handleRawOutput(_ data: Data) {
-        pendingOutput.append(data)
-        recentOutput.append(data)
-        if recentOutput.count > Self.recentOutputLimit {
-            recentOutput = Data(recentOutput.suffix(Self.recentOutputLimit))
+        let parsed = completionParser.consume(Array(data))
+        if let event = parsed.events.last {
+            completionEvent = event
+        }
+        if !parsed.visibleBytes.isEmpty {
+            pendingOutput.append(contentsOf: parsed.visibleBytes)
+            recentOutput.append(contentsOf: parsed.visibleBytes)
+            if recentOutput.count > Self.recentOutputLimit {
+                recentOutput = Data(recentOutput.suffix(Self.recentOutputLimit))
+            }
         }
         outputRevision += 1
     }

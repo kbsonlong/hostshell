@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 public struct ShellCompletionCandidate: Identifiable, Equatable {
     public let id: String
@@ -29,5 +30,161 @@ public enum ShellCompletionPolicy {
         guard context.isInteractiveShell else { return false }
         guard context.cursor >= 0, context.cursor <= context.line.utf16.count else { return false }
         return !context.line.contains("\u{1B}")
+    }
+}
+
+/// Parses completion data emitted by an explicitly installed shell integration.
+/// The integration uses OSC 777 and never runs a command on the user's PTY.
+public struct ShellCompletionEvent: Equatable {
+    public let context: ShellCompletionContext
+    public let candidates: [ShellCompletionCandidate]
+
+    public init(context: ShellCompletionContext, candidates: [ShellCompletionCandidate]) {
+        self.context = context
+        self.candidates = candidates
+    }
+}
+
+public struct ShellCompletionParseResult {
+    public let visibleBytes: [UInt8]
+    public let events: [ShellCompletionEvent]
+
+    public init(visibleBytes: [UInt8], events: [ShellCompletionEvent]) {
+        self.visibleBytes = visibleBytes
+        self.events = events
+    }
+}
+
+public struct ShellCompletionStreamParser {
+    private static let prefix = Array("\u{1B}]777;hostshell.completion;".utf8)
+    private static let bel: UInt8 = 0x07
+    private static let esc: UInt8 = 0x1B
+    private static let backslash: UInt8 = 0x5C
+    private var buffer = [UInt8]()
+
+    public init() {}
+
+    /// Removes HostShell OSC 777 events before bytes reach the terminal emulator.
+    /// Incomplete prefixes/events remain buffered until the next output chunk.
+    public mutating func consume(_ bytes: [UInt8]) -> ShellCompletionParseResult {
+        buffer.append(contentsOf: bytes)
+        var visible = [UInt8]()
+        var events = [ShellCompletionEvent]()
+
+        while !buffer.isEmpty {
+            guard let startRange = buffer.firstRange(of: Self.prefix) else {
+                let keep = Self.longestSuffixMatchingPrefix(buffer)
+                if buffer.count > keep {
+                    visible.append(contentsOf: buffer.prefix(buffer.count - keep))
+                    buffer.removeFirst(buffer.count - keep)
+                }
+                break
+            }
+            let start = startRange.lowerBound
+            if start > 0 {
+                visible.append(contentsOf: buffer.prefix(start))
+                buffer.removeFirst(start)
+            }
+            guard let end = Self.terminator(in: buffer, from: Self.prefix.count) else { break }
+            let payload = Data(buffer[Self.prefix.count..<end.payloadEnd])
+            buffer.removeFirst(end.consumedEnd)
+            if let event = Self.decode(payload) { events.append(event) }
+        }
+
+        if buffer.count > 64 * 1024 {
+            buffer = Array(buffer.suffix(Self.prefix.count - 1))
+        }
+        return ShellCompletionParseResult(visibleBytes: visible, events: events)
+    }
+
+    public mutating func feed(_ bytes: [UInt8]) -> [ShellCompletionEvent] {
+        consume(bytes).events
+    }
+
+    private struct Terminator { let payloadEnd: Int; let consumedEnd: Int }
+
+    private static func terminator(in bytes: [UInt8], from: Int) -> Terminator? {
+        guard from <= bytes.count else { return nil }
+        for i in from..<bytes.count {
+            if bytes[i] == Self.bel { return Terminator(payloadEnd: i, consumedEnd: i + 1) }
+            if bytes[i] == Self.esc, i + 1 < bytes.count, bytes[i + 1] == Self.backslash {
+                return Terminator(payloadEnd: i, consumedEnd: i + 2)
+            }
+        }
+        return nil
+    }
+
+    private static func longestSuffixMatchingPrefix(_ bytes: [UInt8]) -> Int {
+        let maxLength = min(bytes.count, prefix.count - 1)
+        for length in stride(from: maxLength, through: 1, by: -1) {
+            if Array(bytes.suffix(length)) == Array(prefix.prefix(length)) { return length }
+        }
+        return 0
+    }
+
+    private static func decode(_ payload: Data) -> ShellCompletionEvent? {
+        guard let object = try? JSONSerialization.jsonObject(with: payload),
+              let root = object as? [String: Any],
+              let line = root["line"] as? String,
+              let cursor = root["cursor"] as? Int,
+              let interactive = root["interactive"] as? Bool,
+              let rawCandidates = root["candidates"] as? [[String: Any]],
+              rawCandidates.count <= 100,
+              line.utf8.count <= 16 * 1024,
+              ShellCompletionPolicy.shouldUseHostCandidates(
+                ShellCompletionContext(line: line, cursor: cursor, isInteractiveShell: interactive)
+              ) else { return nil }
+        let candidates = rawCandidates.compactMap { item -> ShellCompletionCandidate? in
+            guard let id = item["id"] as? String, !id.isEmpty,
+                  let value = item["value"] as? String,
+                  value.utf8.count <= 4096,
+                  !value.contains("\u{1B}") else { return nil }
+            return ShellCompletionCandidate(id: id, value: value, description: item["description"] as? String)
+        }
+        return ShellCompletionEvent(
+            context: ShellCompletionContext(line: line, cursor: cursor, isInteractiveShell: interactive),
+            candidates: candidates
+        )
+    }
+}
+
+public struct ShellCompletionMenu: View {
+    public let candidates: [ShellCompletionCandidate]
+    public let onSelect: (ShellCompletionCandidate) -> Void
+    public let onDismiss: () -> Void
+
+    public init(candidates: [ShellCompletionCandidate], onSelect: @escaping (ShellCompletionCandidate) -> Void, onDismiss: @escaping () -> Void) {
+        self.candidates = candidates
+        self.onSelect = onSelect
+        self.onDismiss = onDismiss
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("补全").font(.caption.weight(.semibold))
+                Spacer()
+                Button("取消", action: onDismiss).buttonStyle(.plain).font(.caption)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            Divider()
+            ForEach(candidates) { candidate in
+                Button { onSelect(candidate) } label: {
+                    HStack(spacing: 8) {
+                        Text(candidate.value).font(.system(.body, design: .monospaced)).lineLimit(1)
+                        if let description = candidate.description, !description.isEmpty {
+                            Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(minWidth: 280, maxWidth: 520)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(radius: 8)
     }
 }
