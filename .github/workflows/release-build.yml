@@ -253,8 +253,16 @@ jobs:
 
             ### 校验
 
-            所有文件 SHA256 见 `SHA256SUMS`。macOS 产物未签名公证，首次打开需右键 > 打开，
-            或在「系统设置 > 隐私与安全性」中允许。iOS archive 完整包见 `HostShellIOS-unsigned.xcarchive.zip`。
+            所有文件 SHA256 见 `SHA256SUMS`。macOS 产物未签名公证，iOS IPA 未签名（供 Sideloadly / AltStore / Sideloop / Xcode 侧载重签）。
+            iOS archive 完整包见 `HostShellIOS-unsigned.xcarchive.zip`。
+
+            ### macOS 提示「已损坏，无法打开」？
+
+            这是 Gatekeeper 对未公证 App 的提示，App 并未损坏。在终端执行后即可正常打开：
+
+            ```
+            xattr -cr /Applications/HostShell.app
+            ```
 
             ### 环境要求
 

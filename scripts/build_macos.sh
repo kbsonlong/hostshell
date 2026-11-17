@@ -39,12 +39,32 @@ cp "$REPO_ROOT/apps/macos/.build/release/HostShell" "$APP_DIR/Contents/MacOS/Hos
 cp "$REPO_ROOT/target/release/libhostshell_core.dylib" "$APP_DIR/Contents/Frameworks/libhostshell_core.dylib"
 cp "$REPO_ROOT/apps/macos/Resources/HostShell.icns" "$APP_DIR/Contents/Resources/HostShell.icns"
 
-# Fix rpath in binary and dylib
-install_name_tool -change "$REPO_ROOT/target/debug/deps/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
-install_name_tool -change "$REPO_ROOT/target/release/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
-install_name_tool -change "$REPO_ROOT/target/release/deps/libhostshell_core.dylib" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
+# Fix dylib linking. The load command recorded by the linker is whatever
+# absolute path rustc gave the cdylib (on CI this lives inside
+# target/release/build/.../out, which does not exist on user machines),
+# so detect it dynamically instead of guessing fixed paths.
+CORE_LOAD="$(otool -L "$APP_DIR/Contents/MacOS/HostShell" | awk '/libhostshell_core.dylib/ {print $1}' | head -1)"
+if [ -z "$CORE_LOAD" ]; then
+    echo "Error: HostShell binary does not link libhostshell_core.dylib" >&2
+    exit 1
+fi
+if [ "$CORE_LOAD" != "@rpath/libhostshell_core.dylib" ]; then
+    install_name_tool -change "$CORE_LOAD" "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/MacOS/HostShell"
+fi
 install_name_tool -add_rpath "@loader_path/../Frameworks" "$APP_DIR/Contents/MacOS/HostShell" 2>/dev/null || true
 install_name_tool -id "@rpath/libhostshell_core.dylib" "$APP_DIR/Contents/Frameworks/libhostshell_core.dylib" 2>/dev/null || true
+
+# install_name_tool invalidates the linker's ad-hoc signature, and unsigned
+# bundles get flagged by Gatekeeper ("damaged") when quarantined. Re-sign.
+codesign --force --sign - --deep "$APP_DIR"
+
+# Fail the build if the binary still references an absolute dylib path.
+if otool -L "$APP_DIR/Contents/MacOS/HostShell" | grep 'libhostshell_core.dylib' | grep -qE '^[[:space:]]*/'; then
+    echo "Error: HostShell binary still references an absolute dylib path:" >&2
+    otool -L "$APP_DIR/Contents/MacOS/HostShell" | grep 'libhostshell_core.dylib' >&2
+    exit 1
+fi
+codesign --verify --strict "$APP_DIR"
 
 # Write Info.plist
 cat << EOF > "$APP_DIR/Contents/Info.plist"

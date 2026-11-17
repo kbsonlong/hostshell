@@ -73,6 +73,8 @@ hostshell-cli connect prod-k8s-node-01      # 直接开连
 ```
 
 > 或者直接 [下载安装包](https://github.com/kbsonlong/hostshell/releases)（arm64 / amd64 DMG，附 SHA256 校验）。
+>
+> 首次打开若提示「"HostShell" 已损坏，无法打开」，是 Gatekeeper 对未公证 App 的提示（App 并未损坏），终端执行 `xattr -cr /Applications/HostShell.app` 后即可正常打开。
 
 ### iOS App
 
