@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HostShell — 你的口袋数据中心 · 移动 SSH 客户端（macOS · iOS · CLI）</title>
+<meta name="description" content="HostShell 是一款开源移动 SSH 客户端：ProxyJump 多跳、Cloudflare 零信任、分层连接诊断，同一颗 Rust 内核驱动 macOS / iOS / CLI 三端。凌晨 3 点的告警，不用再爬起来开电脑。" />
+<meta property="og:title" content="HostShell — 你的口袋数据中心" />
+<meta property="og:description" content="手机直连、跳板机多跳、Cloudflare 零信任 —— 一切如常。" />
+<meta property="og:type" content="website" />
+<link rel="icon" type="image/svg+xml" href="hostshell-logo.svg" />
+<style>
+  :root {
+    --bg-0: #071320;
+    --bg-1: #0b1c30;
+    --bg-2: #10263f;
+    --panel: #142c49;
+    --panel-2: #0e2238;
+    --line: rgba(95, 228, 222, 0.14);
+    --text: #e8f1f8;
+    --text-dim: #9fb4c7;
+    --cyan: #5fe4de;
+    --blue: #49aefa;
+    --grad: linear-gradient(120deg, #5fe4de 0%, #49aefa 100%);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg-0);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  ::selection { background: rgba(95, 228, 222, 0.3); }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- Nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(7, 19, 32, 0.82);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner {
+    max-width: 1080px; margin: 0 auto; padding: 14px 24px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .nav-logo { height: 34px; width: 34px; border-radius: 8px; }
+  .nav-name { font-weight: 700; font-size: 17px; letter-spacing: 0.2px; }
+  .nav-links { margin-left: auto; display: flex; align-items: center; gap: 26px; }
+  .nav-links a {
+    color: var(--text-dim); text-decoration: none; font-size: 14.5px;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--cyan); }
+  .btn-nav {
+    background: var(--grad); color: #04121f !important;
+    padding: 8px 18px; border-radius: 999px; font-weight: 600;
+  }
+  .btn-nav:hover { color: #04121f; filter: brightness(1.08); }
+
+  /* ---------- Hero ---------- */
+  header { position: relative; padding: 96px 0 72px; overflow: hidden; }
+  header::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse 60% 45% at 70% 0%, rgba(73, 174, 250, 0.16), transparent 65%),
+      radial-gradient(ellipse 45% 40% at 15% 20%, rgba(95, 228, 222, 0.10), transparent 60%);
+    pointer-events: none;
+  }
+  .hero { position: relative; text-align: center; }
+  .hero-logo {
+    height: 84px; width: 84px; border-radius: 20px; margin-bottom: 28px;
+    box-shadow: 0 12px 44px rgba(73, 174, 250, 0.32);
+  }
+  .hero h1 {
+    font-size: clamp(34px, 6vw, 58px); font-weight: 800;
+    letter-spacing: -0.5px; line-height: 1.22; margin-bottom: 18px;
+  }
+  .hero h1 .grad {
+    background: var(--grad);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero .tagline {
+    font-size: clamp(16px, 2.4vw, 20px); color: var(--text-dim);
+    max-width: 640px; margin: 0 auto 34px;
+  }
+  .hero .tagline strong { color: var(--text); }
+  .hero-cta { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 13px 30px; border-radius: 12px;
+    font-size: 15.5px; font-weight: 600; text-decoration: none;
+    transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn-primary {
+    background: var(--grad); color: #04121f;
+    box-shadow: 0 8px 28px rgba(73, 174, 250, 0.35);
+  }
+  .btn-primary:hover { box-shadow: 0 12px 36px rgba(73, 174, 250, 0.45); }
+  .btn-ghost {
+    color: var(--text); border: 1px solid rgba(159, 180, 199, 0.35);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .btn-ghost:hover { border-color: var(--cyan); color: var(--cyan); }
+
+  /* ---------- Hero screenshot ---------- */
+  .hero-shot {
+    position: relative; margin: 64px auto 0; max-width: 920px;
+    border-radius: 14px; overflow: hidden;
+    border: 1px solid rgba(95, 228, 222, 0.22);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255,255,255,0.03);
+  }
+  .hero-shot img { display: block; width: 100%; }
+
+  /* ---------- Sections ---------- */
+  section { padding: 84px 0; }
+  .sec-label {
+    display: inline-block; font-size: 13px; font-weight: 600;
+    color: var(--cyan); letter-spacing: 3px; margin-bottom: 14px;
+  }
+  .sec-title {
+    font-size: clamp(26px, 4vw, 36px); font-weight: 700;
+    margin-bottom: 14px; letter-spacing: -0.3px;
+  }
+  .sec-sub { color: var(--text-dim); max-width: 640px; margin-bottom: 48px; }
+
+  /* ---------- Feature cards ---------- */
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+  .card {
+    background: linear-gradient(160deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--line); border-radius: 16px; padding: 28px 26px;
+    transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+  }
+  .card:hover {
+    transform: translateY(-4px); border-color: rgba(95, 228, 222, 0.4);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+  }
+  .card .icon {
+    font-size: 26px; width: 52px; height: 52px; border-radius: 13px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(95, 228, 222, 0.1); margin-bottom: 18px;
+  }
+  .card h3 { font-size: 17.5px; margin-bottom: 10px; }
+  .card p { font-size: 14.5px; color: var(--text-dim); }
+
+  /* ---------- Pain table ---------- */
+  .pain {
+    width: 100%; border-collapse: collapse; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+  }
+  .pain-wrap { overflow-x: auto; border-radius: 16px; }
+  .pain th, .pain td {
+    text-align: left; padding: 16px 22px; font-size: 14.5px;
+    border-bottom: 1px solid rgba(159, 180, 199, 0.1);
+  }
+  .pain th {
+    background: rgba(95, 228, 228, 0.06); color: var(--cyan);
+    font-size: 13px; letter-spacing: 1.5px;
+  }
+  .pain tr:last-child td { border-bottom: none; }
+  .pain td:first-child { color: var(--text-dim); width: 46%; }
+  .pain td:last-child { color: var(--text); }
+  .pain td:last-child b { color: var(--cyan); }
+
+  /* ---------- Terminal mock ---------- */
+  .term {
+    background: #060e18; border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+    background: rgba(20, 44, 73, 0.6); border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot-r { background: #ff5f57; } .dot-y { background: #febc2e; } .dot-g { background: #28c840; }
+  .term-title { margin-left: 10px; font-size: 12.5px; color: var(--text-dim); font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+  .term-body {
+    padding: 22px 24px; font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 13.5px; line-height: 2; color: #b9cde0;
+  }
+  .term-body .p { color: var(--cyan); }
+  .term-body .ok { color: #4ade80; }
+  .term-body .dim { color: #5f7589; }
+  .term-body .warn { color: #fbbf24; }
+
+  /* ---------- Showcase ---------- */
+  .showcase { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+  .shot {
+    border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .shot img { display: block; width: 100%; }
+  .shot figcaption {
+    padding: 14px 18px; font-size: 13.5px; color: var(--text-dim);
+    border-top: 1px solid var(--line); text-align: center;
+  }
+
+  /* ---------- Forms chips ---------- */
+  .chips { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+  .chip {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 13px; padding: 8px 16px; border-radius: 999px;
+    border: 1px solid rgba(95, 228, 222, 0.28); color: var(--cyan);
+    background: rgba(95, 228, 222, 0.06);
+  }
+
+  /* ---------- CTA ---------- */
+  .cta-band {
+    text-align: center; padding: 76px 28px;
+    background: linear-gradient(160deg, var(--panel) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line); border-radius: 20px;
+  }
+  .cta-band h2 { font-size: clamp(24px, 4vw, 34px); margin-bottom: 12px; }
+  .cta-band p { color: var(--text-dim); margin-bottom: 30px; }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 36px 0 44px;
+    text-align: center; color: var(--text-dim); font-size: 13.5px;
+  }
+  footer a { color: var(--text-dim); text-decoration: none; }
+  footer a:hover { color: var(--cyan); }
+  footer .foot-links { margin-top: 8px; display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 860px) {
+    .grid-3 { grid-template-columns: 1fr; }
+    .grid-2 { grid-template-columns: 1fr; }
+    .showcase { grid-template-columns: 1fr; }
+    .nav-links a:not(.btn-nav) { display: none; }
+    section { padding: 64px 0; }
+    header { padding: 64px 0 48px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <img class="nav-logo" src="hostshell-logo.svg" alt="HostShell logo" />
+    <span class="nav-name">HostShell</span>
+    <div class="nav-links">
+      <a href="#features">核心能力</a>
+      <a href="#diagnosis">分层诊断</a>
+      <a href="#platforms">三端形态</a>
+      <a class="btn-nav" href="https://github.com/kbsonlong/hostshell">GitHub →</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap hero">
+    <img class="hero-logo" src="hostshell-logo.svg" alt="" />
+    <h1>凌晨 3 点的告警<br />不必再爬起来<span class="grad">开电脑</span></h1>
+    <p class="tagline">
+      手机直连 · 跳板机多跳 · Cloudflare 零信任 —— 一切如常。<br />
+      <strong>同一颗 Rust 内核</strong>，驱动 macOS App · iOS App · 终端 CLI 三种形态。
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="https://github.com/kbsonlong/hostshell/releases">下载最新版</a>
+      <a class="btn btn-ghost" href="https://github.com/kbsonlong/hostshell">⭐ Star on GitHub</a>
+    </div>
+    <figure class="hero-shot">
+      <img src="images/hero-macos-hosts.png" alt="HostShell macOS 主界面 — 直连 / ProxyJump / Cloudflare 零信任一目了然" />
+    </figure>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <span class="sec-label">WHY HOSTSHELL</span>
+    <h2 class="sec-title">市面大多数移动 SSH 客户端做不到的事</h2>
+    <p class="sec-sub">手机上也能原生跑 ProxyJump 和 Cloudflare Access。不是网页套壳，是 Rust 原生内核。</p>
+    <div class="grid-3">
+      <div class="card">
+        <div class="icon">🪜</div>
+        <h3>ProxyJump 多跳</h3>
+        <p>可视化配置跳板链，逐跳状态实时可见，堡垒机后的机器一次点击直达。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🛡️</div>
+        <h3>Cloudflare 零信任</h3>
+        <p>原生 WSS 通道封装 <code>cloudflared access</code>，Service Token 免浏览器，手机上直连零信任内网。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔍</div>
+        <h3>分层连接诊断</h3>
+        <p>网络 → 网关鉴权 → SSH 认证，失败精确到阶段与跳数，排障不再靠猜。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔐</div>
+        <h3>密钥不出 Keychain</h3>
+        <p>私钥 / Token 存于系统安全存储，日志自动脱敏，信任链完整可复核。</p>
+      </div>
+      <div class="card">
+        <div class="icon">📥</div>
+        <h3>ssh-config 一键迁移</h3>
+        <p>解析 <code>~/.ssh/config</code>，JumpHost 自动物化，转发规则直接导入，从 PC 无缝搬家。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🤖</div>
+        <h3>AI 助手（可选）</h3>
+        <p>只读分析终端输出，不发命令、不采集数据，帮你快速定位报错。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="diagnosis" style="background: var(--bg-1); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);">
+  <div class="wrap">
+    <span class="sec-label">LAYERED DIAGNOSIS</span>
+    <h2 class="sec-title">失败精确到阶段，排障不再靠猜</h2>
+    <p class="sec-sub">连接链路逐阶段上报，故障定位到具体跳数 —— 这是 HostShell 与其他客户端最不一样的地方。</p>
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+        <span class="term-title">hostshell-cli — connect prod-k8s-node-01</span>
+      </div>
+      <div class="term-body">
+        <div><span class="p">$</span> hostshell-cli connect prod-k8s-node-01</div>
+        <div><span class="dim">[stage 1/4]</span> resolve &nbsp;<span class="ok">✓ ops-bh-gw.example.com:22 reachable</span></div>
+        <div><span class="dim">[stage 2/4]</span> jump &nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">✓ bastion #1 handshake ok · auth: ed25519</span></div>
+        <div><span class="warn">[stage 3/4]</span> gateway &nbsp;<span class="warn">✗ service token expired (401)</span></div>
+        <div><span class="dim">→ 诊断：</span>Cloudflare 网关鉴权失败，请刷新 Service Token（<span class="p">hostshell-cli token renew</span>）</div>
+      </div>
+    </div>
+    <div class="pain-wrap" style="margin-top: 48px;">
+      <table class="pain">
+        <thead>
+          <tr><th>你遇到的</th><th>HostShell 给你的</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>堡垒机配置复杂，手机上基本没法用</td><td>🪜 <b>ProxyJump 多跳</b>可视化配置，逐跳状态实时可见</td></tr>
+          <tr><td>Cloudflare 零信任环境手机无法直连</td><td>🛡️ <b>原生 WSS 通道</b>封装 cloudflared access，Service Token 免浏览器</td></tr>
+          <tr><td>连接失败只显示 "Connection refused"</td><td>🔍 <b>分层诊断</b>：网络 → 网关鉴权 → SSH 认证，失败精确到阶段</td></tr>
+          <tr><td>私钥散落各处不安全</td><td>🔐 私钥 / Token 不出系统安全存储（Keychain），日志自动脱敏</td></tr>
+          <tr><td>从 PC 迁移配置要手动重敲</td><td>📥 解析 ~/.ssh/config，JumpHost 自动物化，转发规则直接导入</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="platforms">
+  <div class="wrap">
+    <span class="sec-label">ONE CORE, THREE FORMS</span>
+    <h2 class="sec-title">随身数据中心机房</h2>
+    <p class="sec-sub">出差路上、咖啡馆里、电梯中 —— 告警响起时，你离生产环境只差一次点击。</p>
+    <div class="showcase">
+      <figure class="shot">
+        <img src="images/ios-hosts.png" alt="iOS 主机列表 — 四种链路模式徽标一目了然" loading="lazy" />
+        <figcaption>iOS 主机列表 · 四种链路模式徽标一目了然</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/ios-terminal.png" alt="iOS 终端会话 — 完整 xterm 终端 + 移动快捷键栏" loading="lazy" />
+        <figcaption>iOS 终端会话 · 完整 xterm + 移动快捷键栏</figcaption>
+      </figure>
+    </div>
+    <div class="chips">
+      <span class="chip">Direct 直连</span>
+      <span class="chip">ProxyJump 单跳 · 多跳</span>
+      <span class="chip">Cloudflare Access</span>
+      <span class="chip">ProxyCommand</span>
+      <span class="chip">LocalForward / RemoteForward</span>
+      <span class="chip">DynamicForward (SOCKS5)</span>
+      <span class="chip">内建 ssh-agent</span>
+      <span class="chip">Host Key 信任管理</span>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top: 0;">
+  <div class="wrap">
+    <div class="cta-band">
+      <h2>准备好像口袋里揣一个机房了吗？</h2>
+      <p>开源免费 · macOS 13+ / iOS 16+ / CLI · DMG 附 SHA256 校验</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/kbsonlong/hostshell/releases">下载最新版</a>
+        <a class="btn btn-ghost" href="https://github.com/kbsonlong/hostshell/discussions">加入讨论</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div><strong>HostShell</strong> — your datacenter, in your pocket.</div>
+    <div class="foot-links">
+      <a href="https://github.com/kbsonlong/hostshell">GitHub</a>
+      <a href="https://github.com/kbsonlong/hostshell/releases">Releases</a>
+      <a href="https://github.com/kbsonlong/hostshell/discussions">Discussions</a>
+      <a href="https://twitter.com/intent/follow?screen_name=hostshell">𝕏 @hostshell</a>
+    </div>
+    <div style="margin-top: 14px; font-size: 12.5px; color: #5f7589;">Built with 🦀 Rust + ☁️ SwiftUI</div>
+  </div>
+</footer>
+
+</body>
+</html>
