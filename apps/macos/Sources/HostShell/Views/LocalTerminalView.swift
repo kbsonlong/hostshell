@@ -7,11 +7,13 @@ import SwiftTerm
 /// The local PTY still receives all ordinary output and all native key input.
 private final class HostShellLocalTerminalView: LocalProcessTerminalView {
     private var completionParser = ShellCompletionStreamParser()
+    private var screenTitleFilter = ScreenTitleStreamFilter()
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         let parsed = completionParser.consume(Array(slice))
-        guard !parsed.visibleBytes.isEmpty else { return }
-        feed(byteArray: parsed.visibleBytes[...])
+        let visible = screenTitleFilter.consume(parsed.visibleBytes)
+        guard !visible.isEmpty else { return }
+        feed(byteArray: visible[...])
     }
 }
 

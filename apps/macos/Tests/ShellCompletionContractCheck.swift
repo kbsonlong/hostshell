@@ -15,6 +15,16 @@ enum ShellCompletionContractCheck {
     }
 
     static func main() {
+        let titleStream = Array("before\u{1B}kwhoami\u{1B}\\zengshenglong\r\n".utf8)
+        for split in 0...titleStream.count {
+            var filter = ScreenTitleStreamFilter()
+            let visible = filter.consume(Array(titleStream[..<split])) + filter.consume(Array(titleStream[split...]))
+            precondition(String(decoding: visible, as: UTF8.self) == "beforezengshenglong\r\n")
+        }
+        let otherOSC = Array("\u{1B}]2;literal\u{1B}ktext\u{1B}\\after".utf8)
+        var filter = ScreenTitleStreamFilter()
+        precondition(filter.consume(otherOSC) == otherOSC)
+
         let prefix = Array("\u{1B}]777;hostshell.completion;".utf8)
         let suffix = Array("\u{07}".utf8)
         let visible = Array("prompt$ ".utf8)

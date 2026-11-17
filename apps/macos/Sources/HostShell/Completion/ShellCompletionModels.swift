@@ -1,6 +1,51 @@
 import Foundation
 import SwiftUI
 
+/// Removes GNU Screen's ESC k title string, which SwiftTerm treats as text.
+/// Other terminal control strings pass through unchanged, even across chunks.
+public struct ScreenTitleStreamFilter {
+    private enum State { case normal, escape, controlString, controlStringEscape, title, titleEscape }
+    private var state = State.normal
+
+    public init() {}
+
+    public mutating func consume(_ bytes: [UInt8]) -> [UInt8] {
+        var output = [UInt8]()
+        for byte in bytes {
+            switch state {
+            case .normal:
+                if byte == 0x1b { state = .escape }
+                else { output.append(byte) }
+            case .escape:
+                if byte == 0x6b { state = .title }
+                else {
+                    output.append(0x1b)
+                    if byte == 0x1b { state = .escape }
+                    else {
+                        output.append(byte)
+                        state = [0x5d, 0x50, 0x5f, 0x5e, 0x58].contains(byte) ? .controlString : .normal
+                    }
+                }
+            case .controlString:
+                output.append(byte)
+                if byte == 0x1b { state = .controlStringEscape }
+                else if byte == 0x07 || byte == 0x18 || byte == 0x1a { state = .normal }
+            case .controlStringEscape:
+                output.append(byte)
+                if byte == 0x5c || byte == 0x18 || byte == 0x1a { state = .normal }
+                else if byte != 0x1b { state = .controlString }
+            case .title:
+                if byte == 0x1b { state = .titleEscape }
+                else if byte == 0x18 || byte == 0x1a { state = .normal }
+            case .titleEscape:
+                if byte == 0x5c || byte == 0x18 || byte == 0x1a { state = .normal }
+                else if byte != 0x1b { state = .title }
+            }
+        }
+        return output
+    }
+}
+
 public struct ShellCompletionCandidate: Identifiable, Equatable {
     public let id: String
     public let value: String
