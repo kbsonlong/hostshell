@@ -220,7 +220,7 @@ public struct TerminalView: View {
                         Label("AI 助手", systemImage: "sparkles")
                     }
                     .controlSize(.small)
-                    .help("分析终端问题；不会执行命令")
+                    .help("分析终端问题；双击命令可执行")
                 }
 
                 if sessionVM.isDisconnected {
@@ -284,6 +284,10 @@ public struct TerminalView: View {
                       terminalOutput: sessionVM.recentTerminalOutputText,
                       selectedText: selectedTextForAI,
                       messages: $aiMessages,
+                      onExecuteCommand: { command in
+                          guard sessionVM.isConnected else { return }
+                          sessionVM.sendInput(command + "\r")
+                      },
                       onClose: { showingAIAssistant = false }
                   )
               }

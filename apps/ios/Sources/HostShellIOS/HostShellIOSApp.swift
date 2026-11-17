@@ -1711,7 +1711,12 @@ struct HostSessionScreen: View {
             AIAssistantView(
                 terminalOutput: terminal.recentOutputText,
                 selectedText: selectedTextForAI,
-                messages: $aiMessages
+                messages: $aiMessages,
+                onExecuteCommand: { command in
+                    guard connected, terminal.session != nil else { return }
+                    terminal.input?(Array((command + "\r").utf8))
+                    showingAIAssistant = false
+                }
             )
         }
         .task(id: connectionAttempt) {
