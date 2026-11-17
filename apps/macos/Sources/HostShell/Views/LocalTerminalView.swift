@@ -267,7 +267,10 @@ private struct LocalSwiftTermRepresentable: NSViewRepresentable {
         terminal.startProcess(
             executable: LocalShell.executable,
             args: ["-l"],
-            environment: Terminal.getEnvironmentVariables(termName: preferences.emulation.rawValue),
+            environment: ShellProviderEnvironment.merged(
+                Terminal.getEnvironmentVariables(termName: preferences.emulation.rawValue),
+                shellExecutable: LocalShell.executable
+            ),
             currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path
         )
         DispatchQueue.main.async {
