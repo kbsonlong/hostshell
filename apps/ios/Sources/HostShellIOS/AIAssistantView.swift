@@ -134,6 +134,11 @@ struct AIAssistantView: View {
                         TextEditor(text: $preview)
                             .font(.system(.body, design: .monospaced))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                     .padding()
                     .navigationTitle("发送内容预览")
@@ -143,7 +148,15 @@ struct AIAssistantView: View {
                             Button("返回") { showingPreview = false }
                         }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("发送给模型") { sendPreview() }
+                            Button {
+                                sendPreview()
+                            } label: {
+                                if isSending {
+                                    ProgressView()
+                                } else {
+                                    Text("发送给模型")
+                                }
+                            }
                                 .disabled(preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
                         }
                     }
@@ -260,17 +273,14 @@ struct AIAssistantView: View {
     private func sendPreview() {
         guard aiEnabled else {
             errorMessage = "请先在终端设置中启用 AI 助手。"
-            showingPreview = false
             return
         }
         guard let apiKey = AIProviderKeychain.loadAPIKey(), !apiKey.isEmpty else {
             errorMessage = AIProviderError.emptyAPIKey.localizedDescription
-            showingPreview = false
             return
         }
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             errorMessage = AIProviderError.emptyModel.localizedDescription
-            showingPreview = false
             return
         }
 
@@ -281,13 +291,13 @@ struct AIAssistantView: View {
 
         isSending = true
         errorMessage = nil
-        showingPreview = false
         Task {
             do {
                 let answer = try await OpenAICompatibleProviderClient(baseURL: baseURL, apiKey: apiKey)
                     .complete(model: model, messages: requestMessages)
                 messages.append(userMessage)
                 messages.append(AIChatMessage(role: "assistant", content: answer))
+                showingPreview = false
                 question = ""
                 includeTerminalOutput = false
                 terminalContext = ""

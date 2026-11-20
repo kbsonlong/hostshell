@@ -20,6 +20,7 @@ import Network
 @_silgen_name("hostshell_delete_host") private func c_delete_host(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_list_jump_hosts") private func c_list_jumps(_ engine: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_save_jump_host") private func c_save_jump(_ engine: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> Int32
+@_silgen_name("hostshell_delete_jump_host") private func c_delete_jump(_ engine: OpaquePointer?, _ id: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("hostshell_import_ssh_config") private func c_import_config(_ engine: OpaquePointer?, _ text: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("hostshell_connect_with_auth_input") private func c_connect(_ engine: OpaquePointer?, _ host: UnsafePointer<CChar>?, _ cols: UInt32, _ rows: UInt32, _ autoAccept: Bool, _ stage: StageCallback?, _ output: OutputCallback?, _ authInput: AuthInputCallback?, _ ctx: UnsafeMutableRawPointer?) -> OpaquePointer?
 @_silgen_name("hostshell_session_write") private func c_session_write(_ session: OpaquePointer?, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int32
@@ -123,6 +124,10 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func save(_ jump: JumpHost) -> Bool {
+        guard !jumps.contains(where: { $0.id != jump.id && $0.name == jump.name }) else {
+            error = "已有同名跳板机，请使用其他名称。"
+            return false
+        }
         guard let data = try? JSONEncoder().encode(jump), let json = String(data: data, encoding: .utf8) else {
             error = "无法编码跳板机配置。"
             return false
@@ -131,6 +136,19 @@ final class AppModel: ObservableObject {
         if rc != 0 { error = "保存跳板机失败（错误码 \(rc)）"; return false }
         reload()
         return true
+    }
+
+    func delete(_ jump: JumpHost) {
+        guard !hosts.contains(where: { $0.jump_host_ids.contains(jump.id) }) else {
+            error = "该跳板机仍被主机引用，请先在主机设置中解除引用。"
+            return
+        }
+        let result = jump.id.withCString { c_delete_jump(engine, $0) }
+        guard result == 0 else {
+            error = result == 1 ? "跳板机不存在，请刷新后重试。" : "删除跳板机失败（错误码 \(result)）。"
+            return
+        }
+        reload()
     }
 
     func delete(_ host: Host) {
@@ -337,7 +355,8 @@ struct HostListScreen: View {
     @State private var activeSheet: HostListSheet?
     @State private var searchText = ""
     @State private var hostPendingDeletion: Host?
-    @State private var sessionHost: Host?
+    @State private var sessionTabs: [SessionTab] = []
+    @State private var selectedSessionID = UUID()
     @State private var showingSessions = false
     @State private var selectedTab: MobileTab = .hosts
     @Environment(\.colorScheme) private var colorScheme
@@ -353,6 +372,7 @@ struct HostListScreen: View {
 
     var body: some View {
         NavigationStack {
+            ZStack {
             List {
                 if let loadError = model.assetLoadError {
                     Section {
@@ -398,12 +418,12 @@ struct HostListScreen: View {
                     }
                     ForEach(filteredHosts) { host in
                         HStack(spacing: 12) {
-                            Button { sessionHost = host; showingSessions = true } label: {
+                            Button { openSession(host) } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     HStack(spacing: 10) {
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(host.name).font(.headline).lineLimit(1)
-                                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                                            Text(verbatim: "\(host.username)@\(host.hostname):\(host.port)")
                                                 .font(.system(.caption, design: .monospaced))
                                                 .foregroundStyle(.secondary).lineLimit(1)
                                         }
@@ -464,9 +484,6 @@ struct HostListScreen: View {
             .toolbarBackground(IOSDesign.navBar(colorScheme), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .navigationDestination(isPresented: $showingSessions) {
-                if let sessionHost { SessionWorkspace(initialHost: sessionHost) }
-            }
             .searchable(text: $searchText, prompt: "搜索名称、地址、用户或标签")
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 mobileTabBar
@@ -513,7 +530,31 @@ struct HostListScreen: View {
             .alert("HostShell", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
                 Button("好", role: .cancel) { model.error = nil }
             } message: { Text(model.error ?? "") }
+                if !sessionTabs.isEmpty {
+                    SessionWorkspace(
+                        tabs: $sessionTabs,
+                        selectedID: $selectedSessionID,
+                        isVisible: $showingSessions
+                    )
+                    .opacity(showingSessions ? 1 : 0)
+                    .allowsHitTesting(showingSessions)
+                    .accessibilityHidden(!showingSessions)
+                }
+            }
+            .toolbar(showingSessions ? .hidden : .visible, for: .navigationBar)
         }
+    }
+
+    private func openSession(_ host: Host) {
+        if let existing = sessionTabs.first(where: { $0.host.id == host.id }) {
+            selectedSessionID = existing.id
+        } else {
+            let hasForwardOwner = sessionTabs.contains { $0.host.id == host.id && !$0.usesExistingForwards }
+            let tab = SessionTab(host: host, usesExistingForwards: hasForwardOwner && !(host.port_forwards ?? []).isEmpty)
+            sessionTabs.append(tab)
+            selectedSessionID = tab.id
+        }
+        showingSessions = true
     }
 
     private var mobileTabBar: some View {
@@ -585,7 +626,7 @@ struct HostEditor: View {
     @State private var passphrase = ""
     @State private var useKey = false
     @State private var useSavedKey = false
-    @State private var useAgent = false
+    @State private var unsupportedAgentConfigured = false
     @State private var selectedKeyId = ""
     @State private var tagText = ""
     @State private var selectedJumpID = ""
@@ -607,19 +648,23 @@ struct HostEditor: View {
                     TextField("名称", text: $host.name)
                     TextField("主机名或 IP", text: $host.hostname).textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("用户名", text: $host.username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("端口", value: $host.port, format: .number).keyboardType(.numberPad)
+                    TextField("端口", value: $host.port, format: .number.grouping(.never)).keyboardType(.numberPad)
                 }
                 Section("认证") {
                     Picker("认证方式", selection: Binding(get: { authChoice }, set: { choice in
-                        useAgent = choice == 3
+                        unsupportedAgentConfigured = choice == -1
                         useSavedKey = choice == 2
                         useKey = choice == 1
                     })) {
+                        if unsupportedAgentConfigured { Text("重新选择").tag(-1) }
                         Text("密码").tag(0)
                         Text("私钥").tag(1)
                         Text("已保存证书").tag(2)
-                        Text("Agent").tag(3)
                     }.pickerStyle(.segmented)
+                    if unsupportedAgentConfigured {
+                        Text("此主机原有认证方式在 iOS 不可用，请重新选择密码、私钥或已保存证书。应用内 Agent 转发可在下方单独启用。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                     if authChoice == 2 {
                         Picker("证书", selection: $selectedKeyId) {
                             Text("选择证书").tag("")
@@ -721,6 +766,8 @@ struct HostEditor: View {
                 }
                 Section("SSH Agent 转发") {
                     Toggle("转发应用内 SSH Agent", isOn: $forwardAgent)
+                    Text("使用下方勾选的应用内证书进行转发，不依赖系统 ssh-agent。")
+                        .font(.footnote).foregroundStyle(.secondary)
                     if forwardAgent {
                         Text("选择允许转发的证书（可多选）")
                             .font(.subheadline)
@@ -765,7 +812,6 @@ struct HostEditor: View {
                         switch authChoice {
                         case 1: host.auth = .privateKey(keyData: keyData, passphrase: passphrase.isEmpty ? nil : passphrase)
                         case 2: host.auth = .keyRef(id: selectedKeyId)
-                        case 3: host.auth = .agent
                         default: host.auth = .password(password)
                         }
                         host.forward_agent = forwardAgent
@@ -789,7 +835,7 @@ struct HostEditor: View {
             case .password(let value): password = value
             case .privateKey(let value, let phrase): useKey = true; keyData = value; passphrase = phrase ?? ""
             case .keyRef(let id): useSavedKey = true; selectedKeyId = id
-            case .agent: useAgent = true
+            case .agent: unsupportedAgentConfigured = true
             }
             selectedJumpID = host.jump_host_ids.first ?? ""
             originalJumpID = selectedJumpID
@@ -881,6 +927,7 @@ struct HostEditor: View {
     }
 
     private var validationError: String? {
+        if unsupportedAgentConfigured { return "请为该主机重新选择密码、私钥或已保存证书。" }
         if host.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入主机名称。" }
         if host.hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入主机地址。" }
         if host.proxy_mode == .proxyJump && selectedJumpID.isEmpty { return "请选择跳板机。" }
@@ -893,7 +940,7 @@ struct HostEditor: View {
     }
 
     private var authChoice: Int {
-        useAgent ? 3 : (useSavedKey ? 2 : (useKey ? 1 : 0))
+        unsupportedAgentConfigured ? -1 : (useSavedKey ? 2 : (useKey ? 1 : 0))
     }
 }
 
@@ -1024,7 +1071,7 @@ private struct KnownHostsSheet: View {
                 }
                 ForEach(entries) { entry in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("\(entry.hostname):\(entry.port)").font(.headline)
+                        Text(verbatim: "\(entry.hostname):\(entry.port)").font(.headline)
                         Text(entry.key_type).font(.caption).foregroundStyle(.secondary)
                         Text(entry.fingerprint).font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
@@ -1049,7 +1096,7 @@ private struct KnownHostsSheet: View {
                 }
                 Button("取消", role: .cancel) { pendingDelete = nil }
             } message: { entry in
-                Text("删除 \(entry.hostname):\(entry.port) 的指纹后，下次连接将自动信任服务器提供的密钥。请先通过可信渠道核对新指纹。")
+                Text(verbatim: "删除 \(entry.hostname):\(entry.port) 的指纹后，下次连接将自动信任服务器提供的密钥。请先通过可信渠道核对新指纹。")
             }
             .alert("主机信任记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好", role: .cancel) { error = nil }
@@ -1218,6 +1265,7 @@ struct KeyImportSheet: View {
     @State private var key = ""
     @State private var passphrase = ""
     @State private var error: String?
+    @State private var showingKeyFileImporter = false
     let onSaved: (String) -> Void
 
     var body: some View {
@@ -1225,6 +1273,11 @@ struct KeyImportSheet: View {
             Form {
                 Section("导入 SSH 私钥") {
                     TextField("证书名称", text: $name)
+                    Button {
+                        showingKeyFileImporter = true
+                    } label: {
+                        Label("从文件导入私钥", systemImage: "doc.badge.arrow.up")
+                    }
                     TextEditor(text: $key).frame(minHeight: 140).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .overlay(alignment: .topLeading) {
                             if key.isEmpty { Text("粘贴 OpenSSH 或 PEM 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) }
@@ -1236,6 +1289,25 @@ struct KeyImportSheet: View {
             }
             .navigationTitle("导入私钥")
             .navigationBarTitleDisplayMode(.inline)
+            .fileImporter(
+                isPresented: $showingKeyFileImporter,
+                allowedContentTypes: [.plainText, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                do {
+                    let urls = try result.get()
+                    guard let url = urls.first else { return }
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                    key = try String(contentsOf: url, encoding: .utf8)
+                    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        name = url.deletingPathExtension().lastPathComponent
+                    }
+                    error = nil
+                } catch {
+                    self.error = "无法读取私钥文件，请选择 UTF-8 编码的 OpenSSH 或 PEM 私钥。"
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -1262,48 +1334,230 @@ struct KeyImportSheet: View {
 struct JumpHostListSheet: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var hostname = ""
-    @State private var username = ""
-    @State private var port: UInt16 = 22
+    @State private var editingJump: JumpHost?
+    @State private var isNewJump = false
+    @State private var pendingDelete: JumpHost?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("已配置跳板机") {
+                    if model.jumps.isEmpty {
+                        Text("尚未配置跳板机。")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.jumps) { jump in
+                        HStack(spacing: 12) {
+                            Button { beginEditing(jump, isNew: false) } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(jump.name).font(.headline)
+                                    Text(verbatim: "\(jump.username)@\(jump.hostname):\(jump.port)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Button { beginEditing(jump, isNew: false) } label: {
+                                Image(systemName: "pencil").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("编辑跳板机 \(jump.name)")
+                        }
+                        .swipeActions(allowsFullSwipe: false) {
+                            Button(role: .destructive) { pendingDelete = jump } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+                if !model.hosts.isEmpty {
+                    Section("直接复制主机作为跳板机") {
+                        ForEach(model.hosts) { host in
+                            Button { copyAsJump(host) } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(host.name).font(.headline)
+                                        Text(verbatim: "\(host.username)@\(host.hostname):\(host.port)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Label("复制", systemImage: "doc.on.doc")
+                                        .font(.subheadline)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("跳板机资产")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { beginEditing(JumpHost(), isNew: true) } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("新增跳板机")
+                }
+            }
+            .sheet(item: $editingJump) { jump in
+                JumpHostEditor(jump: jump, isNew: isNewJump) { updatedJump in
+                    guard model.save(updatedJump) else {
+                        let message = model.error ?? "保存跳板机失败。"
+                        model.error = nil
+                        return message
+                    }
+                    return nil
+                }
+                .environmentObject(model)
+            }
+            .confirmationDialog("删除跳板机？", isPresented: Binding(
+                get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+            ), titleVisibility: .visible, presenting: pendingDelete) { jump in
+                Button("删除 \(jump.name)", role: .destructive) {
+                    model.delete(jump)
+                    if let error = model.error { errorMessage = error; model.error = nil }
+                    pendingDelete = nil
+                }
+                Button("取消", role: .cancel) { pendingDelete = nil }
+            } message: { jump in
+                Text("确定删除跳板机“\(jump.name)”？仍被主机引用的跳板机不能删除。")
+            }
+            .alert("跳板机操作失败", isPresented: Binding(
+                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("好", role: .cancel) { errorMessage = nil }
+            } message: { Text(errorMessage ?? "") }
+        }
+    }
+
+    private func beginEditing(_ jump: JumpHost, isNew: Bool) {
+        isNewJump = isNew
+        editingJump = jump
+    }
+
+    private func copyAsJump(_ host: Host) {
+        if case .agent = host.auth {
+            errorMessage = "该主机原有认证方式在 iOS 不可用。请先将主机改为密码、私钥或已保存证书，再复制为跳板机。"
+            return
+        }
+        let jump = JumpHost(
+            name: host.name,
+            hostname: host.hostname,
+            port: host.port,
+            username: host.username,
+            auth: host.auth
+        )
+        guard model.save(jump) else {
+            errorMessage = model.error ?? "复制主机失败。"
+            model.error = nil
+            return
+        }
+    }
+}
+
+private struct JumpHostEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    @State var jump: JumpHost
+    let isNew: Bool
+    let onSave: (JumpHost) -> String?
     @State private var password = ""
     @State private var keyData = ""
-    @State private var useAgent = false
+    @State private var passphrase = ""
+    @State private var useKey = false
+    @State private var useSavedKey = false
+    @State private var unsupportedAgentConfigured = false
     @State private var selectedKeyId = ""
+    @State private var saveError: String?
+
+    private var authChoice: Int {
+        unsupportedAgentConfigured ? -1 : (useSavedKey ? 2 : (useKey ? 1 : 0))
+    }
+
+    private var validationError: String? {
+        if unsupportedAgentConfigured { return "请为该跳板机重新选择密码、私钥或已保存证书。" }
+        if jump.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入跳板机名称。" }
+        if jump.hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入跳板机地址。" }
+        if jump.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入用户名。" }
+        if authChoice == 2 && !model.keys.contains(where: { $0.id == selectedKeyId }) { return "请选择已保存的证书。" }
+        return nil
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("已配置跳板机") {
-                    ForEach(model.jumps) { j in
-                        VStack(alignment: .leading) { Text(j.name).font(.headline); Text("\(j.username)@\(j.hostname):\(j.port)").font(.caption).foregroundStyle(.secondary) }
-                    }
+                Section("跳板机") {
+                    TextField("名称", text: $jump.name)
+                    TextField("主机名或 IP", text: $jump.hostname).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("用户名", text: $jump.username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("端口", value: $jump.port, format: .number.grouping(.never)).keyboardType(.numberPad)
                 }
-                Section("新增跳板机") {
-                    TextField("名称", text: $name)
-                    TextField("主机名", text: $hostname).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("用户名", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("端口", value: $port, format: .number).keyboardType(.numberPad)
-                    Toggle("使用外部 ssh-agent（iOS 通常不可用）", isOn: $useAgent)
-                    if !useAgent {
-                        Picker("已保存证书", selection: $selectedKeyId) {
-                            Text("不使用证书").tag("")
+                Section("认证") {
+                    Picker("认证方式", selection: Binding(get: { authChoice }, set: { choice in
+                        unsupportedAgentConfigured = choice == -1
+                        useSavedKey = choice == 2
+                        useKey = choice == 1
+                    })) {
+                        if unsupportedAgentConfigured { Text("重新选择").tag(-1) }
+                        Text("密码").tag(0)
+                        Text("私钥").tag(1)
+                        Text("已保存证书").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    if unsupportedAgentConfigured {
+                        Text("此跳板机原有认证方式在 iOS 不可用，请重新选择密码、私钥或已保存证书。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+
+                    if authChoice == 2 {
+                        Picker("证书", selection: $selectedKeyId) {
+                            Text("选择证书").tag("")
                             ForEach(model.keys) { Text($0.name).tag($0.id) }
                         }
-                        if selectedKeyId.isEmpty {
-                        SecureField("密码", text: $password)
-                        TextField("私钥（可选，粘贴）", text: $keyData, axis: .vertical).lineLimit(2...6).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        if model.keys.isEmpty {
+                            Text("暂无已保存的证书，请先在证书管理中导入私钥。")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
+                    } else if authChoice == 1 {
+                        TextEditor(text: $keyData).frame(minHeight: 130).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .overlay(alignment: .topLeading) {
+                                if keyData.isEmpty { Text("粘贴 OpenSSH 私钥").foregroundStyle(.tertiary).padding(8).allowsHitTesting(false) }
+                            }
+                        SecureField("私钥密码（可选）", text: $passphrase)
+                    } else if authChoice == 0 {
+                        SecureField("密码", text: $password)
                     }
-                    Button("保存跳板机") {
-                        let auth: AuthMethod = useAgent ? .agent : (!selectedKeyId.isEmpty ? .keyRef(id: selectedKeyId) : (keyData.isEmpty ? .password(password) : .privateKey(keyData: keyData, passphrase: nil)))
-                        model.save(JumpHost(name: name, hostname: hostname, port: port, username: username, auth: auth))
-                        name = ""; hostname = ""; password = ""; keyData = ""
-                    }.disabled(name.isEmpty || hostname.isEmpty || username.isEmpty)
                 }
             }
-            .navigationTitle("跳板机资产")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .navigationTitle(isNew ? "新增跳板机" : "编辑跳板机")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        if let validationError { saveError = validationError; return }
+                        switch authChoice {
+                        case 1: jump.auth = .privateKey(keyData: keyData, passphrase: passphrase.isEmpty ? nil : passphrase)
+                        case 2: jump.auth = .keyRef(id: selectedKeyId)
+                        default: jump.auth = .password(password)
+                        }
+                        if let error = onSave(jump) { saveError = error } else { dismiss() }
+                    }
+                }
+            }
+        }
+        .alert("保存失败", isPresented: Binding(
+            get: { saveError != nil }, set: { if !$0 { saveError = nil } }
+        )) {
+            Button("好", role: .cancel) { saveError = nil }
+        } message: { Text(saveError ?? "") }
+        .onAppear {
+            switch jump.auth {
+            case .password(let value): password = value
+            case .privateKey(let value, let phrase): useKey = true; keyData = value; passphrase = phrase ?? ""
+            case .keyRef(let id): useSavedKey = true; selectedKeyId = id
+            case .agent: unsupportedAgentConfigured = true
+            }
         }
     }
 }
@@ -1354,7 +1608,7 @@ struct ImportSheet: View {
                                 Text(host.name).font(.headline)
                                 Text(conflicts(host) ? "名称重复，将跳过" : "新主机")
                                     .font(.caption).foregroundStyle(conflicts(host) ? .orange : .secondary)
-                                Text("\(host.username)@\(host.hostname):\(host.port) · \(host.proxy_mode.badgeName)")
+                                Text(verbatim: "\(host.username)@\(host.hostname):\(host.port) · \(host.proxy_mode.badgeName)")
                                     .font(.caption).foregroundStyle(.secondary)
                                 ForEach(host.port_forwards ?? []) { rule in
                                     Label(rule.displayName, systemImage: "point.3.connected.trianglepath.dotted")
@@ -1482,6 +1736,9 @@ private struct SessionTab: Identifiable {
     let id = UUID()
     let host: Host
     let usesExistingForwards: Bool
+    var connected = false
+    var connecting = true
+    var toolbarCommand: SessionToolbarCommand?
 
     init(host: Host, usesExistingForwards: Bool = false) {
         self.host = host
@@ -1495,55 +1752,101 @@ private struct SessionTab: Identifiable {
     }
 }
 
+enum SessionToolbarCommand: Equatable {
+    case settings
+    case aiAssistant
+    case disconnect
+}
+
 private struct SessionWorkspace: View {
     @EnvironmentObject private var model: AppModel
-    @State private var tabs: [SessionTab]
-    @State private var selectedID: UUID
+    @AppStorage(AIProviderSettings.enabledKey) private var aiEnabled = false
+    @Binding private var tabs: [SessionTab]
+    @Binding private var selectedID: UUID
+    @Binding private var isVisible: Bool
     @State private var showingHosts = false
 
-    init(initialHost: Host) {
-        let tab = SessionTab(host: initialHost)
-        _tabs = State(initialValue: [tab])
-        _selectedID = State(initialValue: tab.id)
+    init(tabs: Binding<[SessionTab]>, selectedID: Binding<UUID>, isVisible: Binding<Bool>) {
+        _tabs = tabs
+        _selectedID = selectedID
+        _isVisible = isVisible
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            ZStack {
+                Text("会话")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Button { isVisible = false } label: {
+                        Label("主机", systemImage: "chevron.left")
+                            .font(.caption.weight(.medium))
+                    }
+                    .accessibilityLabel("返回主机列表")
+                    Spacer(minLength: 4)
+                    if let selectedTab = tabs.first(where: { $0.id == selectedID }), selectedTab.connected {
+                        Button { sendToolbarCommand(.settings) } label: {
+                            Image(systemName: "slider.horizontal.3").frame(width: 34, height: 32)
+                        }
+                        .accessibilityLabel("终端设置")
+                        if aiEnabled {
+                            Button { sendToolbarCommand(.aiAssistant) } label: {
+                                Image(systemName: "sparkles").frame(width: 34, height: 32)
+                            }
+                            .accessibilityLabel("AI 助手")
+                        }
+                        Button { sendToolbarCommand(.disconnect) } label: {
+                            Image(systemName: "power").frame(width: 34, height: 32)
+                        }
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("断开连接")
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .foregroundStyle(.white)
+            .background(IOSDesign.deep)
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(tabs) { tab in
                         HStack(spacing: 6) {
                             Button { selectedID = tab.id } label: {
-                                Text(tab.host.name).lineLimit(1)
+                                Text(tab.host.name).font(.caption).lineLimit(1)
                             }
                             Button { close(tab) } label: {
                                 Image(systemName: "xmark").font(.caption2.weight(.bold))
-                                    .frame(width: 28, height: 36)
+                                    .frame(width: 24, height: 30)
                             }
                             .accessibilityLabel("关闭 \(tab.host.name) 标签")
                         }
-                        .font(.subheadline)
-                        .padding(.leading, 12)
+                        .padding(.leading, 8)
                         .background(selectedID == tab.id ? Color.accentColor.opacity(0.16) : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                     }
                     Button { showingHosts = true } label: {
-                        Image(systemName: "plus").frame(width: 44, height: 44)
+                        Image(systemName: "plus").frame(width: 34, height: 34)
                     }.accessibilityLabel("新建会话")
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 8).padding(.vertical, 4)
             }
             .background(IOSDesign.deep)
             ZStack {
-                ForEach(tabs) { tab in
-                    HostSessionScreen(host: tab.connectionHost, usesExistingForwards: tab.usesExistingForwards)
+                ForEach($tabs) { $tab in
+                    HostSessionScreen(
+                        host: tab.connectionHost,
+                        usesExistingForwards: tab.usesExistingForwards,
+                        connected: $tab.connected,
+                        connecting: $tab.connecting,
+                        toolbarCommand: $tab.toolbarCommand
+                    )
                         .opacity(selectedID == tab.id ? 1 : 0)
                         .allowsHitTesting(selectedID == tab.id)
                         .accessibilityHidden(selectedID != tab.id)
                 }
             }
         }
-        .navigationTitle("会话")
-        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingHosts) {
             NavigationStack {
                 List(model.hosts) { host in
@@ -1556,7 +1859,7 @@ private struct SessionWorkspace: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(host.name)
-                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                            Text(verbatim: "\(host.username)@\(host.hostname):\(host.port)")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -1572,7 +1875,12 @@ private struct SessionWorkspace: View {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         tabs.remove(at: index)
         if selectedID == tab.id, let next = tabs.last { selectedID = next.id }
-        if tabs.isEmpty { showingHosts = true }
+        if tabs.isEmpty { isVisible = false }
+    }
+
+    private func sendToolbarCommand(_ command: SessionToolbarCommand) {
+        guard let index = tabs.firstIndex(where: { $0.id == selectedID }) else { return }
+        tabs[index].toolbarCommand = command
     }
 }
 
@@ -1581,13 +1889,14 @@ struct HostSessionScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     let host: Host
     var usesExistingForwards = false
+    @Binding var connected: Bool
+    @Binding var connecting: Bool
+    @Binding var toolbarCommand: SessionToolbarCommand?
     @StateObject private var terminal = TerminalModel()
     @StateObject private var networkMonitor = NetworkStatusMonitor()
     @State private var stage = "正在连接…"
     @State private var stageDetails = "正在连接…"
     @State private var stageHistory: [String] = []
-    @State private var connected = false
-    @State private var connecting = true
     @State private var connectionAttempt = 0
     @State private var connectionNotice: String?
     @State private var showingTerminalSettings = false
@@ -1617,55 +1926,14 @@ struct HostSessionScreen: View {
             if !connected {
                 connectionProgressView
             } else {
-            VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button { showingStageDetails = true } label: {
-                    HStack(spacing: 7) {
-                        Circle().fill(connected ? .green : (connecting ? .orange : .red))
-                            .frame(width: 7, height: 7)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(host.name).font(.caption.weight(.semibold)).lineLimit(1)
-                            Text(connectionNotice ?? "\(host.username)@\(host.hostname):\(host.port)")
-                                .font(.system(size: 10, design: .monospaced)).lineLimit(1)
-                        }
-                        .foregroundStyle(.white)
+                VStack(spacing: 0) {
+                    if let connectionNotice {
+                        Label(connectionNotice, systemImage: "wifi.exclamationmark")
+                            .font(.caption).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(.orange.opacity(0.10))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("查看和复制连接状态")
-                Button { showingTerminalSettings = true } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("终端设置")
-                if aiEnabled {
-                    Button {
-                        selectedTextForAI = terminal.selectedTerminalText
-                        showingAIAssistant = true
-                    } label: {
-                        Image(systemName: "sparkles")
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("AI 助手，分析选中内容")
-                }
-                if connected || connecting {
-                    Button(connecting ? "取消" : "断开") {
-                        terminal.cancelConnect()
-                        terminal.cancelPendingAuthPrompt()
-                        terminal.session?.close()
-                        terminal.session = nil
-                        connected = false
-                        connecting = false
-                        stage = "连接已断开"
-                    }.font(.caption.weight(.semibold))
-                        .frame(minHeight: 44)
-                } else {
-                    Button("重连", action: reconnect).font(.caption.weight(.semibold))
-                        .frame(minHeight: 44)
-                }
-            }
-            .padding(.horizontal, 12)
-            .background(IOSDesign.deep)
             IOSSwiftTerm(
                 session: terminal,
                 preferences: terminalPreferences,
@@ -1683,7 +1951,7 @@ struct HostSessionScreen: View {
                 .padding(.vertical, 6)
             }
             .background(IOSDesign.deep)
-            }
+                }
             }
         }
         .sheet(isPresented: $showingStageDetails) {
@@ -1718,6 +1986,19 @@ struct HostSessionScreen: View {
                     showingAIAssistant = false
                 }
             )
+        }
+        .onChange(of: toolbarCommand) { command in
+            guard let command else { return }
+            toolbarCommand = nil
+            switch command {
+            case .settings:
+                showingTerminalSettings = true
+            case .aiAssistant:
+                selectedTextForAI = terminal.selectedTerminalText
+                showingAIAssistant = true
+            case .disconnect:
+                disconnect()
+            }
         }
         .task(id: connectionAttempt) {
             let attemptID = connectionAttempt
@@ -1826,6 +2107,17 @@ struct HostSessionScreen: View {
         connectionAttempt += 1
     }
 
+    private func disconnect() {
+        terminal.cancelConnect()
+        terminal.cancelPendingAuthPrompt()
+        terminal.session?.close()
+        terminal.session = nil
+        connected = false
+        connecting = false
+        connectionNotice = nil
+        stage = "连接已断开"
+    }
+
     private var connectionProgressView: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -1841,7 +2133,7 @@ struct HostSessionScreen: View {
                             Text(connecting ? "正在连接" : "连接失败")
                                 .font(.title3.weight(.bold))
                             Text(host.name).font(.subheadline).foregroundStyle(.secondary)
-                            Text("\(host.username)@\(host.hostname):\(host.port)")
+                            Text(verbatim: "\(host.username)@\(host.hostname):\(host.port)")
                                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)

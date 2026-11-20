@@ -221,7 +221,7 @@ pub(crate) async fn authenticate_with_agent<H: russh::client::Handler>(
     _handle: &mut russh::client::Handle<H>,
     _user: &str,
 ) -> std::result::Result<russh::client::AuthResult, String> {
-    Err("iOS 不支持外部 ssh-agent；请为主机配置密码或导入私钥".to_string())
+    Err("此认证方式在 iOS 不可用；请为主机或跳板机选择密码、私钥或已保存证书。应用内 SSH Agent 转发在连接设置中单独启用。".to_string())
 }
 
 #[cfg(not(target_os = "ios"))]
